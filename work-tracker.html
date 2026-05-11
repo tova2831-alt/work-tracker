@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="מעקב שעות"/>
+<meta name="theme-color" content="#0d1117"/>
+<title>מעקב שעות</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getFirestore, collection, doc, addDoc, getDocs, deleteDoc, query, where, orderBy, onSnapshot, setDoc, getDoc }
+  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAGe_oigFlbOtHMPCcewxeu6Ov8bPsREC4",
+  authDomain: "tcgroup-c1c30.firebaseapp.com",
+  projectId: "tcgroup-c1c30",
+  storageBucket: "tcgroup-c1c30.firebasestorage.app",
+  messagingSenderId: "565741059703",
+  appId: "1:565741059703:web:6ea87c746a57b0f8b5c8f0",
+  measurementId: "G-LHH5DZF4L5"
+};
+
+const ADMIN_EMAIL = "Tova2831@gmail.com";
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+let currentUser = null;
+let isAdmin = false;
+let projects = [];
+let entries = [];
+let allUsers = {};
+let unsubEntries = null;
+let currentViewUser = null; // null = all (admin), or uid
+
+// ── AUTH ──────────────────────────────────────────────────────────────────────
+window.doLogin = async () => {
+  try {
+    const provider = new GoogleAuthProvider();
+    await signInWithPopup(auth, provider);
+  } catch(e) {
+    showToast('שגיאה בכניסה: ' + e.message);
+  }
+};
+
+window.doLogout = async () => {
+  if(unsubEntries) unsubEntries();
+  await signOut(auth);
+};
+
+onAuthStateChanged(auth, async user => {
+  if(user) {
+    currentUser = user;
+    isAdmin = user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+    // save user profile
+    await setDoc(doc(db, 'users', user.uid), {
+      uid: user.uid, email: user.email, name: user.displayName || user.email, photoURL: user.photoURL || ''
+    }, {merge: true});
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('app-shell').style.display = 'flex';
+    document.getElementById('user-name').textContent = user.displayName || user.email;
+    document.getElementById('user-avatar').src = user.photoURL || '';
+    document.getElementById('user-avatar').style.display = user.photoURL ? 'block' : 'none';
+    if(isAdmin) {
+      document.getElementById('admin-bar').style.display = 'flex';
+      await loadAllUsers();
+    }
+    await loadProjects();
+    subscribeEntries();
+    showPage('report');
+    renderTodayEntries();
+  } else {
+    currentUser = null;
+    isAdmin = false;
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('app-shell').style.display = 'none';
+  }
+});
+
+// ── USERS ─────────────────────────────────────────────────────────────────────
+async function loadAllUsers() {
+  const snap = await getDocs(collection(db, 'users'));
+  allUsers = {};
+  snap.forEach(d => { allUsers[d.id] = d.data(); });
+  renderAdminUserTabs();
+}
+
+function renderAdminUserTabs() {
+  const bar = document.getElementById('admin-user-tabs');
+  bar.innerHTML = `<button class="user-tab ${currentViewUser===null?'active':''}" onclick="setViewUser(null)">כולם</button>`;
+  Object.values(allUsers).forEach(u => {
+    const active = currentViewUser === u.uid ? 'active' : '';
+    bar.innerHTML += `<button class="user-tab ${active}" onclick="setViewUser('${u.uid}')">${u.name.split(' ')[0]}</button>`;
+  });
+}
+
+window.setViewUser = (uid) => {
+  currentViewUser = uid;
+  renderAdminUserTabs();
+  if(unsubEntries) unsubEntries();
+  subscribeEntries();
+  renderSummary();
+  renderLog();
+};
+
+// ── PROJECTS ──────────────────────────────────────────────────────────────────
+async function loadProjects() {
+  const snap = await getDocs(collection(db, 'projects'));
+  projects = [];
+  snap.forEach(d => projects.push({id: d.id, ...d.data()}));
+  renderProjectSelects();
+  renderProjectsSettings();
+}
+
+window.addProject = async () => {
+  const name = document.getElementById('new-proj-name').value.trim();
+  if(!name) return;
+  const color = document.getElementById('new-proj-color').value;
+  const budget = parseFloat(document.getElementById('new-proj-budget').value) || null;
+  const rate = parseFloat(document.getElementById('new-proj-rate').value) || null;
+  await addDoc(collection(db, 'projects'), {name, color, budget, rate, createdAt: Date.now()});
+  document.getElementById('new-proj-name').value = '';
+  document.getElementById('new-proj-budget').value = '';
+  document.getElementById('new-proj-rate').value = '';
+  await loadProjects();
+  showToast('פרויקט נוסף ✓');
+};
+
+window.deleteProject = async (id) => {
+  if(!confirm('למחוק פרויקט זה?')) return;
+  await deleteDoc(doc(db, 'projects', id));
+  await loadProjects();
+  showToast('פרויקט נמחק');
+};
+
+function getProj(id) { return projects.find(p => p.id === id) || {name:'לא ידוע', color:'#888', budget:null, rate:null}; }
+
+function renderProjectSelects() {
+  const opts = projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  document.getElementById('r-proj').innerHTML = '<option value="">בחר פרויקט...</option>' + opts;
+  document.getElementById('log-proj-filter').innerHTML = '<option value="">כל הפרויקטים</option>' + opts;
+  document.getElementById('exp-proj').innerHTML = '<option value="">כל הפרויקטים</option>' + opts;
+}
+
+function renderProjectsSettings() {
+  const el = document.getElementById('projects-list');
+  if(!projects.length) { el.innerHTML = '<div class="empty">אין פרויקטים עדיין</div>'; return; }
+  el.innerHTML = projects.map(p => `
+    <div class="list-row">
+      <span class="dot" style="background:${p.color}"></span>
+      <span style="flex:1;font-weight:500">${p.name}</span>
+      ${p.rate ? `<span class="pill" style="background:${p.color}22;color:${p.color}">₪${p.rate}/ש׳</span>` : ''}
+      ${p.budget ? `<span class="pill" style="background:var(--bg4);color:var(--text2)">${p.budget}ש׳</span>` : ''}
+      <button class="icon-btn" onclick="deleteProject('${p.id}')">×</button>
+    </div>`).join('');
+}
+
+// ── ENTRIES ───────────────────────────────────────────────────────────────────
+function subscribeEntries() {
+  let q;
+  if(isAdmin && currentViewUser === null) {
+    q = query(collection(db, 'entries'), orderBy('date','desc'));
+  } else {
+    const uid = isAdmin ? currentViewUser : currentUser.uid;
+    q = query(collection(db, 'entries'), where('uid','==',uid), orderBy('date','desc'));
+  }
+  unsubEntries = onSnapshot(q, snap => {
+    entries = [];
+    snap.forEach(d => entries.push({id: d.id, ...d.data()}));
+    renderTodayEntries();
+    renderLog();
+    renderSummary();
+    renderReportAlerts();
+  });
+}
+
+window.addEntry = async () => {
+  const date = document.getElementById('r-date').value;
+  const projId = document.getElementById('r-proj').value;
+  const hours = parseFloat(document.getElementById('r-hours').value);
+  const note = document.getElementById('r-note').value.trim();
+  if(!date || !projId || !hours || hours <= 0) { showToast('מלא תאריך, פרויקט ושעות'); return; }
+  const p = getProj(projId);
+  await addDoc(collection(db, 'entries'), {
+    date, projId, hours, note,
+    uid: currentUser.uid,
+    userName: currentUser.displayName || currentUser.email,
+    value: p.rate ? hours * p.rate : null,
+    createdAt: Date.now()
+  });
+  document.getElementById('r-hours').value = '';
+  document.getElementById('r-note').value = '';
+  showToast('דיווח נשמר ✓');
+};
+
+window.deleteEntry = async (id) => {
+  await deleteDoc(doc(db, 'entries', id));
+  showToast('דיווח נמחק');
+};
+
+function todayStr() { return new Date().toISOString().slice(0,10); }
+function thisMonth() { return todayStr().slice(0,7); }
+
+function renderTodayEntries() {
+  const el = document.getElementById('today-list');
+  const td = todayStr();
+  const myUid = currentUser?.uid;
+  const list = entries.filter(e => e.date === td && (!isAdmin || currentViewUser === null || e.uid === currentViewUser) && (isAdmin || e.uid === myUid));
+  if(!list.length) { el.innerHTML = '<div class="empty" style="padding:16px 0">אין דיווחים להיום</div>'; document.getElementById('today-total').textContent=''; return; }
+  const total = list.reduce((a,e) => a+e.hours, 0);
+  const totalVal = list.reduce((a,e) => a+(e.value||0), 0);
+  document.getElementById('today-total').textContent = `${total.toFixed(1)} ש׳${totalVal?` · ₪${Math.round(totalVal).toLocaleString('he-IL')}` :''}`;
+  el.innerHTML = list.map(e => {
+    const p = getProj(e.projId);
+    const canDelete = isAdmin || e.uid === myUid;
+    return `<div class="list-row">
+      <span class="dot" style="background:${p.color}"></span>
+      <span style="flex:1">${p.name}</span>
+      ${isAdmin && !currentViewUser ? `<span style="font-size:11px;color:var(--text3)">${e.userName?.split(' ')[0]||''}</span>` : ''}
+      ${e.note ? `<span style="font-size:12px;color:var(--text3)">${e.note}</span>` : ''}
+      ${e.value ? `<span style="font-size:12px;color:var(--green)">₪${Math.round(e.value).toLocaleString('he-IL')}</span>` : ''}
+      <span style="font-weight:600;font-size:13px;min-width:32px;text-align:left">${e.hours}ש׳</span>
+      ${canDelete ? `<button class="icon-btn" onclick="deleteEntry('${e.id}')">×</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ── LOG ───────────────────────────────────────────────────────────────────────
+function renderLog() {
+  const el = document.getElementById('log-list');
+  const filterProj = document.getElementById('log-proj-filter')?.value || '';
+  const filterMonth = document.getElementById('log-month-filter')?.value || '';
+  const myUid = currentUser?.uid;
+  let list = entries.filter(e => {
+    if(!isAdmin && e.uid !== myUid) return false;
+    if(isAdmin && currentViewUser && e.uid !== currentViewUser) return false;
+    if(filterProj && e.projId !== filterProj) return false;
+    if(filterMonth && !e.date.startsWith(filterMonth)) return false;
+    return true;
+  });
+  if(!list.length) { el.innerHTML = '<div class="empty">אין דיווחים</div>'; return; }
+  const byDate = {};
+  list.forEach(e => { (byDate[e.date] = byDate[e.date]||[]).push(e); });
+  el.innerHTML = Object.entries(byDate).sort((a,b)=>b[0].localeCompare(a[0])).map(([date, dayList]) => {
+    const tot = dayList.reduce((a,e)=>a+e.hours,0);
+    const totVal = dayList.reduce((a,e)=>a+(e.value||0),0);
+    const [y,m,d] = date.split('-');
+    return `<div class="card" style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+        <span style="font-weight:600;font-size:13px">${d}/${m}/${y}</span>
+        <span style="font-size:12px;color:var(--text2)">${tot.toFixed(1)}ש׳${totVal?` · ₪${Math.round(totVal).toLocaleString('he-IL')}`:''}</span>
+      </div>
+      ${dayList.map(e => {
+        const p = getProj(e.projId);
+        const canDelete = isAdmin || e.uid === currentUser?.uid;
+        return `<div class="list-row">
+          <span class="dot" style="background:${p.color}"></span>
+          <span style="flex:1">${p.name}</span>
+          ${isAdmin && !currentViewUser ? `<span style="font-size:11px;color:var(--text3)">${e.userName?.split(' ')[0]||''}</span>` : ''}
+          ${e.note ? `<span style="font-size:11px;color:var(--text3)">${e.note}</span>` : ''}
+          ${e.value ? `<span style="font-size:12px;color:var(--green)">₪${Math.round(e.value).toLocaleString('he-IL')}</span>` : ''}
+          <span style="font-weight:600;font-size:13px">${e.hours}ש׳</span>
+          ${canDelete ? `<button class="icon-btn" onclick="deleteEntry('${e.id}')">×</button>` : ''}
+        </div>`;
+      }).join('')}
+    </div>`;
+  }).join('');
+}
+
+// ── SUMMARY ───────────────────────────────────────────────────────────────────
+let sumPeriod = 'month';
+window.setSumPeriod = (p, btn) => {
+  sumPeriod = p;
+  document.querySelectorAll('.inner-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderSummary();
+};
+
+function renderSummary() {
+  const myUid = currentUser?.uid;
+  let filtered = entries.filter(e => {
+    if(!isAdmin && e.uid !== myUid) return false;
+    if(isAdmin && currentViewUser && e.uid !== currentViewUser) return false;
+    return true;
+  });
+  if(sumPeriod === 'month') filtered = filtered.filter(e => e.date.startsWith(thisMonth()));
+  else if(sumPeriod === 'week') {
+    const now = new Date();
+    const mon = new Date(now); mon.setDate(now.getDate() - ((now.getDay()+6)%7));
+    const monStr = mon.toISOString().slice(0,10);
+    filtered = filtered.filter(e => e.date >= monStr && e.date <= todayStr());
+  }
+  const totalH = filtered.reduce((a,e)=>a+e.hours,0);
+  const totalV = filtered.reduce((a,e)=>a+(e.value||0),0);
+  const days = [...new Set(filtered.map(e=>e.date))].length;
+  const avgDay = days ? totalH/days : 0;
+  document.getElementById('sum-metrics').innerHTML = `
+    <div class="metric"><div class="metric-val">${totalH.toFixed(1)}</div><div class="metric-label">שעות</div></div>
+    <div class="metric"><div class="metric-val" style="font-size:16px">₪${Math.round(totalV).toLocaleString('he-IL')}</div><div class="metric-label">שווי</div></div>
+    <div class="metric"><div class="metric-val">${days}</div><div class="metric-label">ימים</div></div>
+    <div class="metric"><div class="metric-val">${avgDay.toFixed(1)}</div><div class="metric-label">ממוצע</div></div>`;
+
+  const byProj = {};
+  filtered.forEach(e => {
+    if(!byProj[e.projId]) byProj[e.projId] = {h:0, v:0};
+    byProj[e.projId].h += e.hours;
+    byProj[e.projId].v += e.value||0;
+  });
+  const sorted = Object.entries(byProj).sort((a,b)=>b[1].h-a[1].h);
+  const bdEl = document.getElementById('sum-breakdown');
+  if(!sorted.length) { bdEl.innerHTML='<div class="empty">אין נתונים</div>'; return; }
+  bdEl.innerHTML = sorted.map(([id,{h,v}]) => {
+    const p = getProj(id);
+    const pct = totalH ? Math.round(h/totalH*100) : 0;
+    const bpct = (sumPeriod==='month' && p.budget) ? Math.min(Math.round(h/p.budget*100),100) : pct;
+    const barColor = (sumPeriod==='month' && p.budget && h/p.budget >= 1) ? 'var(--red)' : (sumPeriod==='month' && p.budget && h/p.budget >= 0.8) ? 'var(--yellow)' : p.color;
+    return `<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:13px">
+        <span><span class="dot" style="background:${p.color};margin-left:6px"></span><strong>${p.name}</strong></span>
+        <span style="color:var(--text2)">${h.toFixed(1)}ש׳${v?` · ₪${Math.round(v).toLocaleString('he-IL')}`:''}</span>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill" style="width:${bpct}%;background:${barColor}"></div></div>
+      ${sumPeriod==='month'&&p.budget ? `<div style="font-size:11px;color:var(--text3);margin-top:3px">${h.toFixed(1)}/${p.budget} ש׳ · ${Math.round(h/p.budget*100)}%</div>` : ''}
+    </div>`;
+  }).join('');
+
+  // per-user breakdown (admin only, all view)
+  const perUserEl = document.getElementById('sum-per-user');
+  if(isAdmin && !currentViewUser) {
+    const byUser = {};
+    filtered.forEach(e => {
+      if(!byUser[e.uid]) byUser[e.uid] = {h:0, v:0, name: e.userName||e.uid};
+      byUser[e.uid].h += e.hours;
+      byUser[e.uid].v += e.value||0;
+    });
+    const usersSorted = Object.values(byUser).sort((a,b)=>b.h-a.h);
+    perUserEl.innerHTML = `<div class="card" style="margin-bottom:12px">
+      <div class="card-title">לפי עובד</div>
+      ${usersSorted.map(u => `<div class="list-row">
+        <span style="flex:1;font-weight:500">${u.name}</span>
+        <span style="color:var(--text2);font-size:13px">${u.h.toFixed(1)}ש׳</span>
+        ${u.v ? `<span style="color:var(--green);font-size:13px">₪${Math.round(u.v).toLocaleString('he-IL')}</span>` : ''}
+      </div>`).join('')}
+    </div>`;
+  } else {
+    perUserEl.innerHTML = '';
+  }
+}
+
+// ── ALERTS ────────────────────────────────────────────────────────────────────
+function renderReportAlerts() {
+  const el = document.getElementById('report-alerts');
+  const mm = thisMonth();
+  const alerts = [];
+  projects.forEach(p => {
+    if(!p.budget) return;
+    const used = entries.filter(e=>e.projId===p.id && e.date.startsWith(mm) && (isAdmin||e.uid===currentUser?.uid)).reduce((a,e)=>a+e.hours,0);
+    const pct = used/p.budget;
+    if(pct >= 1) alerts.push({type:'danger', msg:`${p.name}: חרגת מהתקציב! ${used.toFixed(1)}/${p.budget} ש׳`});
+    else if(pct >= 0.8) alerts.push({type:'warn', msg:`${p.name}: קרוב לתקציב — ${used.toFixed(1)}/${p.budget} ש׳ (${Math.round(pct*100)}%)`});
+  });
+  el.innerHTML = alerts.map(a=>`<div class="alert alert-${a.type}">⚠ ${a.msg}</div>`).join('');
+}
+
+// ── EXPORT ────────────────────────────────────────────────────────────────────
+window.exportExcel = () => {
+  if(typeof XLSX==='undefined'){showToast('טוען...');return;}
+  const filterProj = document.getElementById('exp-proj').value;
+  const filterMonth = document.getElementById('exp-month').value;
+  const myUid = currentUser?.uid;
+  let list = entries.filter(e => {
+    if(!isAdmin && e.uid !== myUid) return false;
+    if(isAdmin && currentViewUser && e.uid !== currentViewUser) return false;
+    if(filterProj && e.projId !== filterProj) return false;
+    if(filterMonth && !e.date.startsWith(filterMonth)) return false;
+    return true;
+  }).sort((a,b)=>a.date.localeCompare(b.date));
+  if(!list.length){showToast('אין נתונים לייצוא');return;}
+  const wb = XLSX.utils.book_new();
+  const rows = [['תאריך','עובד','פרויקט','שעות','תעריף שעה','שווי','הערה']];
+  list.forEach(e => {
+    const p = getProj(e.projId);
+    rows.push([e.date, e.userName||'', p.name, e.hours, p.rate||'', e.value||'', e.note||'']);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:12},{wch:18},{wch:18},{wch:8},{wch:14},{wch:12},{wch:30}];
+  XLSX.utils.book_append_sheet(wb, ws, 'דיווחים');
+  // summary sheet
+  const byP = {};
+  list.forEach(e => {
+    if(!byP[e.projId]) byP[e.projId]={h:0,v:0};
+    byP[e.projId].h+=e.hours; byP[e.projId].v+=e.value||0;
+  });
+  const sumRows = [['פרויקט','שעות','שווי']];
+  Object.entries(byP).forEach(([id,{h,v}])=>{ const p=getProj(id); sumRows.push([p.name,h,v]); });
+  const ws2 = XLSX.utils.aoa_to_sheet(sumRows);
+  XLSX.utils.book_append_sheet(wb, ws2, 'סיכום');
+  XLSX.writeFile(wb, `שעות_${filterMonth||'כל_הזמן'}.xlsx`);
+};
+
+window.exportCSV = () => {
+  const filterProj = document.getElementById('exp-proj').value;
+  const filterMonth = document.getElementById('exp-month').value;
+  const myUid = currentUser?.uid;
+  let list = entries.filter(e => {
+    if(!isAdmin && e.uid !== myUid) return false;
+    if(filterProj && e.projId !== filterProj) return false;
+    if(filterMonth && !e.date.startsWith(filterMonth)) return false;
+    return true;
+  }).sort((a,b)=>a.date.localeCompare(b.date));
+  if(!list.length){showToast('אין נתונים');return;}
+  const rows = [['תאריך','עובד','פרויקט','שעות','שווי','הערה']];
+  list.forEach(e => { const p=getProj(e.projId); rows.push([e.date,e.userName||'',p.name,e.hours,e.value||'',e.note||'']); });
+  const csv = rows.map(r=>r.join(',')).join('\n');
+  const blob = new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`שעות_${filterMonth||'כל_הזמן'}.csv`; a.click();
+};
+
+// ── UI HELPERS ────────────────────────────────────────────────────────────────
+window.showPage = (name) => {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  document.getElementById('nav-'+name).classList.add('active');
+  const titles = {report:'דיווח שעות', log:'יומן', summary:'סיכום', settings:'הגדרות'};
+  document.getElementById('page-title').textContent = titles[name]||name;
+  if(name==='log'){renderLog();}
+  if(name==='summary'){renderSummary();}
+  if(name==='settings'){renderProjectsSettings();}
+};
+
+window.showToast = (msg) => {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2500);
+};
+
+// init date fields
+document.addEventListener('DOMContentLoaded', () => {
+  const today = new Date().toISOString().slice(0,10);
+  document.getElementById('r-date').value = today;
+  document.getElementById('log-month-filter').value = today.slice(0,7);
+  document.getElementById('exp-month').value = today.slice(0,7);
+  // today label
+  const d = new Date();
+  document.getElementById('today-date-label').textContent =
+    d.toLocaleDateString('he-IL',{weekday:'long',day:'numeric',month:'long'});
+});
+</script>
+
+<style>
+:root{
+  --bg:#0d1117;--bg2:#161b22;--bg3:#1c2230;--bg4:#21262d;
+  --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.13);
+  --text:#e6edf3;--text2:#8b949e;--text3:#484f58;
+  --accent:#6e76f5;--green:#3fb950;--yellow:#d29922;--red:#f85149;
+  --r:12px;--r-sm:8px;
+  --font:'Heebo',sans-serif;
+  --st:env(safe-area-inset-top,0px);--sb:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:var(--bg)}
+body{font-family:var(--font);color:var(--text);direction:rtl;font-size:14px}
+button,input,select{font-family:var(--font);outline:none}
+input,select{background:var(--bg3);border:1px solid var(--border2);color:var(--text);border-radius:var(--r-sm);padding:9px 12px;font-size:14px;width:100%}
+input::placeholder{color:var(--text3)}
+input[type=color]{padding:3px;cursor:pointer;height:38px}
+input[type=range]{width:100%}
+button{cursor:pointer;border:none;font-size:14px;font-weight:500;font-family:var(--font)}
+.btn{background:var(--accent);color:#fff;border-radius:var(--r-sm);padding:10px 16px}
+.btn:active{opacity:.8}
+.btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border2);border-radius:var(--r-sm);padding:9px 14px}
+.icon-btn{background:none;color:var(--text3);padding:4px 8px;font-size:18px;line-height:1}
+
+/* LOGIN */
+#login-screen{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100dvh;background:var(--bg);gap:20px;padding:40px;
+}
+#login-screen h1{font-size:28px;font-weight:700}
+#login-screen p{color:var(--text2);text-align:center;font-size:15px;line-height:1.6}
+.login-btn{
+  display:flex;align-items:center;gap:12px;background:white;color:#1f1f1f;
+  border-radius:var(--r-sm);padding:12px 24px;font-size:15px;font-weight:600;
+  box-shadow:0 2px 8px rgba(0,0,0,.3);
+}
+.g-logo{width:20px;height:20px}
+
+/* APP SHELL */
+#app-shell{display:none;flex-direction:column;height:100dvh;padding-top:var(--st)}
+#topbar{
+  padding:12px 16px 10px;border-bottom:1px solid var(--border);flex-shrink:0;
+  display:flex;align-items:center;justify-content:space-between;background:var(--bg);
+}
+#topbar-left h1{font-size:17px;font-weight:700;letter-spacing:-.4px}
+#topbar-left .sub{font-size:11px;color:var(--text3);margin-top:1px}
+.user-info{display:flex;align-items:center;gap:8px}
+#user-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover}
+#user-name{font-size:12px;color:var(--text2);max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.logout-btn{background:none;color:var(--text3);font-size:12px;padding:4px 8px;border:1px solid var(--border2);border-radius:6px}
+
+/* ADMIN BAR */
+#admin-bar{
+  display:none;padding:8px 16px;border-bottom:1px solid var(--border);
+  background:var(--bg2);align-items:center;gap:8px;flex-shrink:0;overflow-x:auto;
+}
+.admin-label{font-size:11px;color:var(--accent);font-weight:600;white-space:nowrap}
+#admin-user-tabs{display:flex;gap:6px}
+.user-tab{
+  padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;
+  background:var(--bg3);color:var(--text2);border:1px solid var(--border2);white-space:nowrap;
+}
+.user-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* CONTENT */
+#content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 14px calc(68px + var(--sb) + 14px)}
+
+/* NAVBAR */
+#navbar{
+  position:fixed;bottom:0;left:0;right:0;padding-bottom:var(--sb);
+  background:var(--bg2);border-top:1px solid var(--border);display:flex;z-index:100;
+}
+.nav-btn{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:8px 4px;border:none;background:none;color:var(--text3);
+  font-size:10px;font-weight:500;transition:color .15s;
+}
+.nav-btn.active{color:var(--accent)}
+.nav-icon{font-size:22px;line-height:1}
+
+/* CARDS */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;margin-bottom:12px}
+.card-title{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px}
+
+/* METRICS */
+.metrics{display:grid;gap:8px;margin-bottom:12px}
+.metrics.cols-4{grid-template-columns:repeat(4,1fr)}
+.metric{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 6px;text-align:center}
+.metric-val{font-size:18px;font-weight:700;line-height:1.1}
+.metric-label{font-size:10px;color:var(--text2);margin-top:4px}
+
+/* BAR */
+.bar-wrap{background:var(--bg4);border-radius:4px;height:6px;overflow:hidden}
+.bar-fill{height:100%;border-radius:4px;transition:width .4s}
+
+/* DOT / PILL */
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;flex-shrink:0}
+.pill{display:inline-flex;align-items:center;border-radius:20px;padding:2px 8px;font-size:11px;font-weight:600}
+
+/* ALERT */
+.alert{border-radius:var(--r-sm);padding:10px 14px;font-size:13px;margin-bottom:8px;display:flex;gap:8px;line-height:1.4}
+.alert-warn{background:rgba(210,153,34,.15);color:var(--yellow);border:1px solid rgba(210,153,34,.25)}
+.alert-danger{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.25)}
+
+/* LIST */
+.list-row{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px}
+.list-row:last-child{border-bottom:none}
+
+/* INNER TABS */
+.inner-tabs{display:flex;gap:4px;margin-bottom:14px;background:var(--bg3);border-radius:var(--r-sm);padding:3px}
+.inner-tab{flex:1;padding:7px;text-align:center;font-size:12px;font-weight:500;color:var(--text3);border-radius:6px;border:none;background:none;cursor:pointer;transition:all .15s}
+.inner-tab.active{background:var(--bg2);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.3)}
+
+/* EMPTY */
+.empty{text-align:center;padding:30px 0;color:var(--text3);font-size:13px}
+
+/* TOAST */
+#toast{
+  position:fixed;bottom:calc(70px + var(--sb) + 10px);left:50%;
+  transform:translateX(-50%) translateY(20px);
+  background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r-sm);
+  padding:10px 18px;font-size:13px;font-weight:500;
+  opacity:0;transition:all .25s;pointer-events:none;white-space:nowrap;z-index:200;
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* PAGES */
+.page{display:none}
+.page.active{display:block}
+
+::-webkit-scrollbar{width:3px}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+</style>
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div id="login-screen">
+  <div style="font-size:40px">⏱</div>
+  <h1>מעקב שעות</h1>
+  <p>מערכת דיווח שעות לצוות<br/>התחבר עם חשבון Google שלך</p>
+  <button class="login-btn" onclick="doLogin()">
+    <svg class="g-logo" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+    התחברות עם Google
+  </button>
+</div>
+
+<!-- APP SHELL -->
+<div id="app-shell">
+  <div id="topbar">
+    <div id="topbar-left">
+      <h1 id="page-title">דיווח שעות</h1>
+      <div class="sub" id="today-date-label"></div>
+    </div>
+    <div class="user-info">
+      <img id="user-avatar" src="" alt=""/>
+      <span id="user-name"></span>
+      <button class="logout-btn" onclick="doLogout()">יציאה</button>
+    </div>
+  </div>
+
+  <!-- ADMIN BAR -->
+  <div id="admin-bar">
+    <span class="admin-label">👑 מנהל</span>
+    <div id="admin-user-tabs"></div>
+  </div>
+
+  <div id="content">
+
+    <!-- PAGE: REPORT -->
+    <div class="page active" id="page-report">
+      <div id="report-alerts"></div>
+      <div class="card">
+        <div class="card-title">דיווח חדש</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <div style="flex:1"><input type="date" id="r-date"/></div>
+          <div style="flex:1.5"><select id="r-proj"></select></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <div style="width:85px"><input type="number" id="r-hours" placeholder="שעות" min="0.25" max="24" step="0.25"/></div>
+          <div style="flex:1"><input type="text" id="r-note" placeholder="הערה (אופציונלי)"/></div>
+        </div>
+        <button class="btn" style="width:100%" onclick="addEntry()">+ הוסף דיווח</button>
+      </div>
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">דיווחים היום</div>
+          <div id="today-total" style="font-size:12px;color:var(--text2)"></div>
+        </div>
+        <div id="today-list"></div>
+      </div>
+    </div>
+
+    <!-- PAGE: LOG -->
+    <div class="page" id="page-log">
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <select id="log-proj-filter" onchange="renderLog()" style="flex:1"></select>
+        <input type="month" id="log-month-filter" onchange="renderLog()" style="flex:1"/>
+      </div>
+      <div id="log-list"></div>
+    </div>
+
+    <!-- PAGE: SUMMARY -->
+    <div class="page" id="page-summary">
+      <div class="inner-tabs">
+        <button class="inner-tab active" onclick="setSumPeriod('month',this)">החודש</button>
+        <button class="inner-tab" onclick="setSumPeriod('week',this)">השבוע</button>
+        <button class="inner-tab" onclick="setSumPeriod('all',this)">הכל</button>
+      </div>
+      <div class="metrics cols-4" id="sum-metrics"></div>
+      <div id="sum-per-user"></div>
+      <div class="card">
+        <div class="card-title">לפי פרויקט</div>
+        <div id="sum-breakdown"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">יצוא נתונים</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <select id="exp-proj" style="flex:1"></select>
+          <input type="month" id="exp-month" style="flex:1"/>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-ghost" style="flex:1;font-size:13px" onclick="exportExcel()">📊 Excel</button>
+          <button class="btn-ghost" style="flex:1;font-size:13px" onclick="exportCSV()">📄 CSV</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: SETTINGS -->
+    <div class="page" id="page-settings">
+      <div class="card">
+        <div class="card-title">הוסף פרויקט</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div style="flex:1"><input type="text" id="new-proj-name" placeholder="שם הפרויקט"/></div>
+          <input type="color" id="new-proj-color" value="#6e76f5" style="width:42px;height:38px"/>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <div style="flex:1"><input type="number" id="new-proj-budget" placeholder="תקציב חודשי (ש׳)" min="1" step="1"/></div>
+          <div style="flex:1"><input type="number" id="new-proj-rate" placeholder="שווי שעה (₪)" min="0" step="1"/></div>
+        </div>
+        <button class="btn" style="width:100%" onclick="addProject()">+ הוסף פרויקט</button>
+      </div>
+      <div class="card">
+        <div class="card-title">פרויקטים</div>
+        <div id="projects-list"></div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+
+  <!-- NAVBAR -->
+  <div id="navbar">
+    <button class="nav-btn active" id="nav-report" onclick="showPage('report')">
+      <span class="nav-icon">＋</span>דיווח
+    </button>
+    <button class="nav-btn" id="nav-log" onclick="showPage('log')">
+      <span class="nav-icon">📋</span>יומן
+    </button>
+    <button class="nav-btn" id="nav-summary" onclick="showPage('summary')">
+      <span class="nav-icon">📊</span>סיכום
+    </button>
+    <button class="nav-btn" id="nav-settings" onclick="showPage('settings')">
+      <span class="nav-icon">⚙️</span>הגדרות
+    </button>
+  </div>
+</div><!-- /app-shell -->
+
+<div id="toast"></div>
+
+</body>
+</html>
