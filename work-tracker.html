@@ -3,17 +3,17 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta name="mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="apple-mobile-web-app-title" content="מעקב שעות"/>
-<meta name="theme-color" content="#0d1117"/>
+<meta name="theme-color" content="#ffffff"/>
 <title>מעקב שעות</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getFirestore, collection, doc, addDoc, getDocs, deleteDoc, query, where, orderBy, onSnapshot, setDoc, getDoc, updateDoc }
+import { getFirestore, collection, doc, addDoc, getDocs, deleteDoc, query, where, orderBy, onSnapshot, setDoc, getDoc }
   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 const firebaseConfig = {
@@ -28,97 +28,34 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// ── STATE ─────────────────────────────────────────────────────────────────────
-let currentUser = null; // {uid, name, isAdmin, color}
+let currentUser = null;
 let projects = [];
 let entries = [];
 let teamMembers = [];
 let unsubEntries = null;
 
-// ── LOGIN ─────────────────────────────────────────────────────────────────────
-window.doLogin = async () => {
-  const name = document.getElementById('login-name').value;
-  const code = document.getElementById('login-code').value;
-  if(!name || !code) { showLoginError('בחר שם והזן קוד'); return; }
-
-  const snap = await getDocs(query(collection(db,'team'), where('name','==',name)));
-  if(snap.empty) { showLoginError('שם לא נמצא במערכת'); return; }
-  
-  const userData = snap.docs[0].data();
-  const docId = snap.docs[0].id;
-  
-  if(userData.code !== code) { showLoginError('קוד שגוי'); return; }
-  
-  currentUser = { uid: docId, name: userData.name, isAdmin: userData.isAdmin||false, color: userData.color||'#6e76f5' };
-  localStorage.setItem('wt_user', JSON.stringify(currentUser));
-  
-  enterApp();
-};
-
-window.doLogout = () => {
-  currentUser = null;
-  localStorage.removeItem('wt_user');
-  if(unsubEntries) unsubEntries();
-  document.getElementById('login-screen').style.display = 'flex';
-  document.getElementById('app-shell').style.display = 'none';
-};
-
-function showLoginError(msg) {
-  document.getElementById('login-error').textContent = msg;
-  document.getElementById('login-error').style.display = 'block';
-}
-
-async function enterApp() {
-  document.getElementById('login-screen').style.display = 'none';
-  document.getElementById('app-shell').style.display = 'flex';
-  document.getElementById('user-name').textContent = currentUser.name;
-  if(currentUser.isAdmin) document.getElementById('admin-badge').style.display = 'inline';
-  
-  await loadTeam();
-  await loadProjects();
-  subscribeEntries();
-  showPage('report');
-  
-  // init date
-  document.getElementById('r-date').value = todayStr();
-  document.getElementById('log-month-filter').value = thisMonth();
-  document.getElementById('exp-month').value = thisMonth();
-}
-
-// ── AUTO LOGIN ────────────────────────────────────────────────────────────────
-const saved = localStorage.getItem('wt_user');
-if(saved) {
-  currentUser = JSON.parse(saved);
-  document.addEventListener('DOMContentLoaded', () => {
-    loadTeam().then(() => {
-      loadProjects().then(() => {
-        subscribeEntries();
-        showPage('report');
-        document.getElementById('login-screen').style.display = 'none';
-        document.getElementById('app-shell').style.display = 'flex';
-        document.getElementById('user-name').textContent = currentUser.name;
-        if(currentUser.isAdmin) document.getElementById('admin-badge').style.display = 'inline';
-        document.getElementById('r-date').value = todayStr();
-        document.getElementById('log-month-filter').value = thisMonth();
-        document.getElementById('exp-month').value = thisMonth();
-      });
-    });
-  });
-}
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+function todayStr() { return new Date().toISOString().slice(0,10); }
+function thisMonth() { return todayStr().slice(0,7); }
+function timeToMins(t) { if(!t) return 0; const [h,m]=t.split(':').map(Number); return h*60+m; }
+function fmtMoney(n) { return '₪'+Math.round(n).toLocaleString('he-IL'); }
+function getProj(id) { return projects.find(p=>p.id===id)||{name:'לא ידוע',color:'#888',budget:null,rate:null}; }
+function getMember(uid) { return teamMembers.find(m=>m.uid===uid)||{name:'לא ידוע',color:'#888'}; }
 
 // ── TEAM ──────────────────────────────────────────────────────────────────────
 async function loadTeam() {
   const snap = await getDocs(collection(db,'team'));
   teamMembers = [];
-  snap.forEach(d => teamMembers.push({uid:d.id, ...d.data()}));
-  renderTeamSettings();
+  snap.forEach(d => teamMembers.push({uid:d.id,...d.data()}));
   renderLoginNames();
+  renderTeamSettings();
 }
 
 function renderLoginNames() {
   const sel = document.getElementById('login-name');
-  const names = teamMembers.map(m => m.name);
-  sel.innerHTML = '<option value="">בחר שם...</option>' + names.map(n=>`<option value="${n}">${n}</option>`).join('');
+  if(!sel) return;
+  sel.innerHTML = '<option value="">בחר שם...</option>' +
+    teamMembers.map(m=>`<option value="${m.name}">${m.name}</option>`).join('');
 }
 
 window.addTeamMember = async () => {
@@ -126,13 +63,12 @@ window.addTeamMember = async () => {
   const code = document.getElementById('new-member-code').value.trim();
   const color = document.getElementById('new-member-color').value;
   const isAdmin = document.getElementById('new-member-admin').checked;
-  if(!name || !code) { showToast('מלא שם וקוד'); return; }
-  if(teamMembers.find(m=>m.name===name)) { showToast('שם כבר קיים'); return; }
-  
-  await addDoc(collection(db,'team'), {name, code, color, isAdmin, createdAt:Date.now()});
-  document.getElementById('new-member-name').value = '';
-  document.getElementById('new-member-code').value = '';
-  document.getElementById('new-member-admin').checked = false;
+  if(!name||!code){showToast('מלא שם וקוד');return;}
+  if(teamMembers.find(m=>m.name===name)){showToast('שם כבר קיים');return;}
+  await addDoc(collection(db,'team'),{name,code,color,isAdmin,createdAt:Date.now()});
+  document.getElementById('new-member-name').value='';
+  document.getElementById('new-member-code').value='';
+  document.getElementById('new-member-admin').checked=false;
   await loadTeam();
   showToast('עובד נוסף ✓');
 };
@@ -146,56 +82,97 @@ window.deleteTeamMember = async (id) => {
 
 function renderTeamSettings() {
   const el = document.getElementById('team-list');
-  if(!teamMembers.length) { el.innerHTML = '<div class="empty">אין עובדים עדיין</div>'; return; }
-  el.innerHTML = teamMembers.map(m => `
+  if(!el) return;
+  if(!teamMembers.length){el.innerHTML='<div class="empty">אין עובדים עדיין</div>';return;}
+  el.innerHTML = teamMembers.map(m=>`
     <div class="list-row">
       <span class="dot" style="background:${m.color}"></span>
-      <span style="flex:1;font-weight:500">${m.name}</span>
-      <span style="font-size:12px;color:var(--text3)">קוד: ${m.code}</span>
-      ${m.isAdmin ? '<span class="badge-admin">מנהל</span>' : ''}
+      <span style="flex:1;font-weight:600">${m.name}</span>
+      <span style="color:var(--text2);font-size:14px">קוד: ${m.code}</span>
+      ${m.isAdmin?'<span class="badge">מנהל</span>':''}
       <button class="icon-btn" onclick="deleteTeamMember('${m.uid}')">×</button>
     </div>`).join('');
+}
+
+// ── LOGIN ─────────────────────────────────────────────────────────────────────
+window.doLogin = async () => {
+  const name = document.getElementById('login-name').value;
+  const code = document.getElementById('login-code').value;
+  if(!name||!code){showLoginError('בחר שם והזן קוד');return;}
+  const member = teamMembers.find(m=>m.name===name);
+  if(!member){showLoginError('שם לא נמצא');return;}
+  if(member.code!==code){showLoginError('קוד שגוי');return;}
+  currentUser = {uid:member.uid,name:member.name,isAdmin:member.isAdmin||false,color:member.color||'#6e76f5'};
+  localStorage.setItem('wt_user',JSON.stringify(currentUser));
+  enterApp();
+};
+
+window.doLogout = () => {
+  currentUser=null;
+  localStorage.removeItem('wt_user');
+  if(unsubEntries) unsubEntries();
+  document.getElementById('login-screen').style.display='flex';
+  document.getElementById('app-shell').style.display='none';
+};
+
+function showLoginError(msg) {
+  const el=document.getElementById('login-error');
+  el.textContent=msg; el.style.display='block';
+}
+
+async function enterApp() {
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('app-shell').style.display='flex';
+  document.getElementById('user-name').textContent=currentUser.name;
+  if(currentUser.isAdmin) document.getElementById('admin-badge').style.display='inline-flex';
+  await loadProjects();
+  subscribeEntries();
+  showPage('dashboard');
+  document.getElementById('r-date').value=todayStr();
+  document.getElementById('log-month-filter').value=thisMonth();
+  document.getElementById('exp-month').value=thisMonth();
+  document.getElementById('dash-month').value=thisMonth();
 }
 
 // ── PROJECTS ──────────────────────────────────────────────────────────────────
 async function loadProjects() {
   const snap = await getDocs(collection(db,'projects'));
-  projects = [];
-  snap.forEach(d => projects.push({id:d.id, ...d.data()}));
+  projects=[];
+  snap.forEach(d=>projects.push({id:d.id,...d.data()}));
   renderProjectSelects();
   renderProjectsSettings();
 }
 
-function getProj(id) { return projects.find(p=>p.id===id) || {name:'לא ידוע',color:'#888',budget:null,rate:null}; }
-
 function renderProjectSelects() {
-  const opts = projects.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
-  document.getElementById('r-proj').innerHTML = '<option value="">בחר פרויקט...</option>'+opts;
-  document.getElementById('log-proj-filter').innerHTML = '<option value="">כל הפרויקטים</option>'+opts;
-  document.getElementById('exp-proj').innerHTML = '<option value="">כל הפרויקטים</option>'+opts;
+  const opts=projects.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
+  ['r-proj','log-proj-filter','exp-proj'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.innerHTML=(id==='r-proj'?'<option value="">בחר פרויקט...</option>':'<option value="">כל הפרויקטים</option>')+opts;
+  });
 }
 
 function renderProjectsSettings() {
-  const el = document.getElementById('projects-list');
-  if(!projects.length) { el.innerHTML='<div class="empty">אין פרויקטים</div>'; return; }
-  el.innerHTML = projects.map(p=>`
+  const el=document.getElementById('projects-list');
+  if(!el) return;
+  if(!projects.length){el.innerHTML='<div class="empty">אין פרויקטים</div>';return;}
+  el.innerHTML=projects.map(p=>`
     <div class="list-row">
       <span class="dot" style="background:${p.color}"></span>
-      <span style="flex:1;font-weight:500">${p.name}</span>
-      ${p.budget?`<span style="font-size:12px;color:var(--text2)">${p.budget}ש׳/חודש</span>`:''}
-      ${currentUser?.isAdmin && p.rate?`<span style="font-size:12px;color:var(--green)">₪${p.rate}/ש׳</span>`:''}
+      <span style="flex:1;font-weight:600">${p.name}</span>
+      ${p.budget?`<span style="color:var(--text2);font-size:13px">${p.budget}ש׳</span>`:''}
+      ${currentUser?.isAdmin&&p.rate?`<span class="badge-green">${fmtMoney(p.rate)}/ש׳</span>`:''}
       <button class="icon-btn" onclick="deleteProject('${p.id}')">×</button>
     </div>`).join('');
 }
 
 window.addProject = async () => {
-  const name = document.getElementById('new-proj-name').value.trim();
+  const name=document.getElementById('new-proj-name').value.trim();
   if(!name) return;
-  const color = document.getElementById('new-proj-color').value;
-  const budget = parseFloat(document.getElementById('new-proj-budget').value)||null;
-  const rate = parseFloat(document.getElementById('new-proj-rate').value)||null;
-  const cadence = document.getElementById('new-proj-cadence').value;
-  await addDoc(collection(db,'projects'), {name,color,budget,rate,cadence,createdAt:Date.now()});
+  const color=document.getElementById('new-proj-color').value;
+  const budget=parseFloat(document.getElementById('new-proj-budget').value)||null;
+  const rate=parseFloat(document.getElementById('new-proj-rate').value)||null;
+  const cadence=document.getElementById('new-proj-cadence').value;
+  await addDoc(collection(db,'projects'),{name,color,budget,rate,cadence,createdAt:Date.now()});
   document.getElementById('new-proj-name').value='';
   document.getElementById('new-proj-budget').value='';
   document.getElementById('new-proj-rate').value='';
@@ -212,79 +189,51 @@ window.deleteProject = async (id) => {
 // ── ENTRIES ───────────────────────────────────────────────────────────────────
 function subscribeEntries() {
   if(unsubEntries) unsubEntries();
-  let q;
-  if(currentUser?.isAdmin) {
-    q = query(collection(db,'entries'), orderBy('date','desc'));
-  } else {
-    q = query(collection(db,'entries'), where('uid','==',currentUser.uid), orderBy('date','desc'));
-  }
-  unsubEntries = onSnapshot(q, snap => {
-    entries = [];
-    snap.forEach(d => entries.push({id:d.id,...d.data()}));
+  const q = currentUser?.isAdmin
+    ? query(collection(db,'entries'),orderBy('date','desc'))
+    : query(collection(db,'entries'),where('uid','==',currentUser.uid),orderBy('date','desc'));
+  unsubEntries=onSnapshot(q,snap=>{
+    entries=[];
+    snap.forEach(d=>entries.push({id:d.id,...d.data()}));
     renderTodayEntries();
     renderLog();
     renderSummary();
+    renderDashboard();
     renderReportAlerts();
   });
 }
 
-function todayStr() { return new Date().toISOString().slice(0,10); }
-function thisMonth() { return todayStr().slice(0,7); }
-
-function timeToMinutes(t) {
-  const [h,m] = t.split(':').map(Number);
-  return h*60+m;
-}
-
-function checkOverlap(date, startTime, endTime, excludeId=null) {
-  const newStart = timeToMinutes(startTime);
-  const newEnd = timeToMinutes(endTime);
-  const dayEntries = entries.filter(e => e.date===date && e.uid===currentUser.uid && e.id!==excludeId);
-  for(const e of dayEntries) {
-    if(!e.startTime || !e.endTime) continue;
-    const eStart = timeToMinutes(e.startTime);
-    const eEnd = timeToMinutes(e.endTime);
-    if(newStart < eEnd && newEnd > eStart) {
-      return getProj(e.projId).name;
-    }
-  }
-  return null;
+function checkOverlap(date,start,end,excludeId=null) {
+  const s=timeToMins(start), e=timeToMins(end);
+  return entries.find(x=>
+    x.date===date && x.uid===currentUser.uid && x.id!==excludeId &&
+    x.startTime && x.endTime &&
+    timeToMins(x.startTime)<e && timeToMins(x.endTime)>s
+  );
 }
 
 window.addEntry = async () => {
-  const date = document.getElementById('r-date').value;
-  const projId = document.getElementById('r-proj').value;
-  const startTime = document.getElementById('r-start').value;
-  const endTime = document.getElementById('r-end').value;
-  const note = document.getElementById('r-note').value.trim();
-
-  if(!date||!projId||!startTime||!endTime) { showToast('מלא את כל השדות'); return; }
-  
-  const startMin = timeToMinutes(startTime);
-  const endMin = timeToMinutes(endTime);
-  
-  if(endMin <= startMin) { showToast('שעת סיום חייבת להיות אחרי שעת התחלה'); return; }
-  
-  const hours = (endMin - startMin) / 60;
-  
-  // check overlap
-  const overlap = checkOverlap(date, startTime, endTime);
-  if(overlap) {
-    showToast(`⚠️ חפיפה עם דיווח קיים: ${overlap}`);
-    return;
-  }
-  
-  const p = getProj(projId);
-  await addDoc(collection(db,'entries'), {
-    date, projId, startTime, endTime, hours,
-    note, uid: currentUser.uid, userName: currentUser.name,
-    value: p.rate ? hours*p.rate : null,
-    createdAt: Date.now()
+  const date=document.getElementById('r-date').value;
+  const projId=document.getElementById('r-proj').value;
+  const startTime=document.getElementById('r-start').value;
+  const endTime=document.getElementById('r-end').value;
+  const note=document.getElementById('r-note').value.trim();
+  if(!date||!projId||!startTime||!endTime){showToast('מלא את כל השדות');return;}
+  const startM=timeToMins(startTime), endM=timeToMins(endTime);
+  if(endM<=startM){showToast('שעת סיום חייבת להיות אחרי שעת התחלה');return;}
+  const overlap=checkOverlap(date,startTime,endTime);
+  if(overlap){showToast(`⚠️ חפיפה עם: ${getProj(overlap.projId).name} (${overlap.startTime}–${overlap.endTime})`);return;}
+  const hours=(endM-startM)/60;
+  const p=getProj(projId);
+  await addDoc(collection(db,'entries'),{
+    date,projId,startTime,endTime,hours,note,
+    uid:currentUser.uid,userName:currentUser.name,
+    value:p.rate?hours*p.rate:null,createdAt:Date.now()
   });
-  
   document.getElementById('r-start').value='';
   document.getElementById('r-end').value='';
   document.getElementById('r-note').value='';
+  document.getElementById('r-hours-display').textContent='';
   showToast('דיווח נשמר ✓');
 };
 
@@ -293,151 +242,36 @@ window.deleteEntry = async (id) => {
   showToast('נמחק');
 };
 
-// ── TODAY ─────────────────────────────────────────────────────────────────────
+// ── RENDER TODAY ──────────────────────────────────────────────────────────────
 function renderTodayEntries() {
-  const el = document.getElementById('today-list');
-  const td = todayStr();
-  const list = entries.filter(e => e.date===td && (currentUser?.isAdmin || e.uid===currentUser?.uid));
-  
-  if(!list.length) { el.innerHTML='<div class="empty">אין דיווחים להיום</div>'; document.getElementById('today-total').textContent=''; return; }
-  
-  const total = list.reduce((a,e)=>a+e.hours,0);
-  const totalVal = list.reduce((a,e)=>a+(e.value||0),0);
-  document.getElementById('today-total').textContent = `${total.toFixed(1)} ש׳${currentUser?.isAdmin&&totalVal?` · ₪${Math.round(totalVal).toLocaleString('he-IL')}` :''}`;
-  
-  const sorted = [...list].sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
-  el.innerHTML = sorted.map(e => {
-    const p = getProj(e.projId);
-    const canDel = currentUser?.isAdmin || e.uid===currentUser?.uid;
+  const el=document.getElementById('today-list');
+  if(!el) return;
+  const td=todayStr();
+  const list=entries.filter(e=>e.date===td&&(currentUser?.isAdmin||e.uid===currentUser?.uid));
+  if(!list.length){el.innerHTML='<div class="empty">אין דיווחים להיום</div>';document.getElementById('today-total').textContent='';return;}
+  const total=list.reduce((a,e)=>a+e.hours,0);
+  const totalV=list.reduce((a,e)=>a+(e.value||0),0);
+  document.getElementById('today-total').textContent=`${total.toFixed(1)} ש׳${currentUser?.isAdmin&&totalV?' · '+fmtMoney(totalV):''}`;
+  const sorted=[...list].sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
+  el.innerHTML=sorted.map(e=>{
+    const p=getProj(e.projId);
+    const canDel=currentUser?.isAdmin||e.uid===currentUser?.uid;
     return `<div class="list-row">
       <span class="dot" style="background:${p.color}"></span>
-      <span style="flex:1">${p.name}</span>
-      ${currentUser?.isAdmin?`<span style="font-size:11px;color:var(--text3)">${e.userName||''}</span>`:''}
-      <span style="font-size:12px;color:var(--text2)">${e.startTime||''}–${e.endTime||''}</span>
-      ${e.note?`<span style="font-size:11px;color:var(--text3)">${e.note}</span>`:''}
-      ${currentUser?.isAdmin&&e.value?`<span style="font-size:12px;color:var(--green)">₪${Math.round(e.value).toLocaleString('he-IL')}</span>`:''}
-      <span style="font-weight:600;font-size:13px">${e.hours.toFixed(1)}ש׳</span>
+      <span style="flex:1;font-weight:500">${p.name}</span>
+      ${currentUser?.isAdmin?`<span class="tag" style="background:${getMember(e.uid).color}22;color:${getMember(e.uid).color}">${e.userName||''}</span>`:''}
+      <span style="color:var(--text2);font-size:13px">${e.startTime||''}–${e.endTime||''}</span>
+      ${e.note?`<span style="color:var(--text3);font-size:13px">${e.note}</span>`:''}
+      ${currentUser?.isAdmin&&e.value?`<span class="badge-green">${fmtMoney(e.value)}</span>`:''}
+      <span style="font-weight:700">${e.hours.toFixed(1)}ש׳</span>
       ${canDel?`<button class="icon-btn" onclick="deleteEntry('${e.id}')">×</button>`:''}
     </div>`;
   }).join('');
 }
 
-// ── LOG ───────────────────────────────────────────────────────────────────────
-function renderLog() {
-  const el = document.getElementById('log-list');
-  const fProj = document.getElementById('log-proj-filter')?.value||'';
-  const fMonth = document.getElementById('log-month-filter')?.value||'';
-  
-  let list = entries.filter(e => {
-    if(!currentUser?.isAdmin && e.uid!==currentUser?.uid) return false;
-    if(fProj && e.projId!==fProj) return false;
-    if(fMonth && !e.date.startsWith(fMonth)) return false;
-    return true;
-  });
-  
-  if(!list.length) { el.innerHTML='<div class="empty">אין דיווחים</div>'; return; }
-  
-  const byDate = {};
-  list.forEach(e=>{(byDate[e.date]=byDate[e.date]||[]).push(e);});
-  
-  el.innerHTML = Object.entries(byDate).sort((a,b)=>b[0].localeCompare(a[0])).map(([date,dayList])=>{
-    const tot = dayList.reduce((a,e)=>a+e.hours,0);
-    const totVal = dayList.reduce((a,e)=>a+(e.value||0),0);
-    const [y,m,d] = date.split('-');
-    const sorted = [...dayList].sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||''));
-    return `<div class="card" style="margin-bottom:8px">
-      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-        <span style="font-weight:600;font-size:13px">${d}/${m}/${y}</span>
-        <span style="font-size:12px;color:var(--text2)">${tot.toFixed(1)}ש׳${currentUser?.isAdmin&&totVal?` · ₪${Math.round(totVal).toLocaleString('he-IL')}`:''}</span>
-      </div>
-      ${sorted.map(e=>{
-        const p=getProj(e.projId);
-        const canDel=currentUser?.isAdmin||e.uid===currentUser?.uid;
-        return `<div class="list-row">
-          <span class="dot" style="background:${p.color}"></span>
-          <span style="flex:1">${p.name}</span>
-          ${currentUser?.isAdmin?`<span style="font-size:11px;color:var(--text3)">${e.userName||''}</span>`:''}
-          <span style="font-size:11px;color:var(--text2)">${e.startTime||''}–${e.endTime||''}</span>
-          ${e.note?`<span style="font-size:11px;color:var(--text3)">${e.note}</span>`:''}
-          <span style="font-weight:600;font-size:13px">${e.hours.toFixed(1)}ש׳</span>
-          ${canDel?`<button class="icon-btn" onclick="deleteEntry('${e.id}')">×</button>`:''}
-        </div>`;
-      }).join('')}
-    </div>`;
-  }).join('');
-}
-
-// ── SUMMARY ───────────────────────────────────────────────────────────────────
-let sumPeriod = 'month';
-window.setSumPeriod = (p,btn) => {
-  sumPeriod=p;
-  document.querySelectorAll('.inner-tab').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  renderSummary();
-};
-
-function renderSummary() {
-  let filtered = entries.filter(e => currentUser?.isAdmin || e.uid===currentUser?.uid);
-  if(sumPeriod==='month') filtered=filtered.filter(e=>e.date.startsWith(thisMonth()));
-  else if(sumPeriod==='week') {
-    const now=new Date();
-    const mon=new Date(now); mon.setDate(now.getDate()-((now.getDay()+6)%7));
-    filtered=filtered.filter(e=>e.date>=mon.toISOString().slice(0,10)&&e.date<=todayStr());
-  }
-  
-  const totalH=filtered.reduce((a,e)=>a+e.hours,0);
-  const totalV=filtered.reduce((a,e)=>a+(e.value||0),0);
-  const days=[...new Set(filtered.map(e=>e.date))].length;
-  const avgDay=days?totalH/days:0;
-  
-  document.getElementById('sum-metrics').innerHTML=`
-    <div class="metric"><div class="metric-val">${totalH.toFixed(1)}</div><div class="metric-label">שעות</div></div>
-    ${currentUser?.isAdmin?`<div class="metric"><div class="metric-val" style="font-size:16px">₪${Math.round(totalV).toLocaleString('he-IL')}</div><div class="metric-label">שווי</div></div>`:''}
-    <div class="metric"><div class="metric-val">${days}</div><div class="metric-label">ימים</div></div>
-    <div class="metric"><div class="metric-val">${avgDay.toFixed(1)}</div><div class="metric-label">ממוצע</div></div>`;
-
-  const byProj={};
-  filtered.forEach(e=>{if(!byProj[e.projId])byProj[e.projId]={h:0,v:0};byProj[e.projId].h+=e.hours;byProj[e.projId].v+=e.value||0;});
-  const sorted=Object.entries(byProj).sort((a,b)=>b[1].h-a[1].h);
-  
-  const bdEl=document.getElementById('sum-breakdown');
-  if(!sorted.length){bdEl.innerHTML='<div class="empty">אין נתונים</div>';return;}
-  
-  bdEl.innerHTML=sorted.map(([id,{h,v}])=>{
-    const p=getProj(id);
-    const pct=totalH?Math.round(h/totalH*100):0;
-    const bpct=(sumPeriod==='month'&&p.budget)?Math.min(Math.round(h/p.budget*100),100):pct;
-    const barColor=(sumPeriod==='month'&&p.budget&&h/p.budget>=1)?'var(--red)':(sumPeriod==='month'&&p.budget&&h/p.budget>=0.8)?'var(--yellow)':p.color;
-    return `<div style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:13px">
-        <span><span class="dot" style="background:${p.color};margin-left:6px"></span><strong>${p.name}</strong></span>
-        <span style="color:var(--text2)">${h.toFixed(1)}ש׳${currentUser?.isAdmin&&v?` · ₪${Math.round(v).toLocaleString('he-IL')}`:''}</span>
-      </div>
-      <div class="bar-wrap"><div class="bar-fill" style="width:${bpct}%;background:${barColor}"></div></div>
-      ${sumPeriod==='month'&&p.budget?`<div style="font-size:11px;color:var(--text3);margin-top:3px">${h.toFixed(1)}/${p.budget} ש׳ · ${Math.round(h/p.budget*100)}%</div>`:''}
-    </div>`;
-  }).join('');
-
-  // per user (admin)
-  const perUserEl=document.getElementById('sum-per-user');
-  if(currentUser?.isAdmin) {
-    const byUser={};
-    filtered.forEach(e=>{if(!byUser[e.uid])byUser[e.uid]={h:0,v:0,name:e.userName||e.uid};byUser[e.uid].h+=e.hours;byUser[e.uid].v+=e.value||0;});
-    const us=Object.values(byUser).sort((a,b)=>b.h-a.h);
-    perUserEl.innerHTML=`<div class="card" style="margin-bottom:12px">
-      <div class="card-title">לפי עובד</div>
-      ${us.map(u=>`<div class="list-row">
-        <span style="flex:1;font-weight:500">${u.name}</span>
-        <span style="color:var(--text2);font-size:13px">${u.h.toFixed(1)}ש׳</span>
-        ${u.v?`<span style="color:var(--green);font-size:13px">₪${Math.round(u.v).toLocaleString('he-IL')}</span>`:''}
-      </div>`).join('')}
-    </div>`;
-  } else perUserEl.innerHTML='';
-}
-
-// ── ALERTS ────────────────────────────────────────────────────────────────────
 function renderReportAlerts() {
   const el=document.getElementById('report-alerts');
+  if(!el) return;
   const mm=thisMonth();
   const alerts=[];
   projects.forEach(p=>{
@@ -450,45 +284,238 @@ function renderReportAlerts() {
   el.innerHTML=alerts.map(a=>`<div class="alert alert-${a.type}">⚠ ${a.msg}</div>`).join('');
 }
 
-// ── CALENDAR VIEW ─────────────────────────────────────────────────────────────
-let calMonth = thisMonth();
-window.prevMonth = () => { const [y,m]=calMonth.split('-').map(Number); const d=new Date(y,m-2,1); calMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; renderCalendar(); };
-window.nextMonth = () => { const [y,m]=calMonth.split('-').map(Number); const d=new Date(y,m,1); calMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; renderCalendar(); };
+// ── LOG ───────────────────────────────────────────────────────────────────────
+function renderLog() {
+  const el=document.getElementById('log-list');
+  if(!el) return;
+  const fProj=document.getElementById('log-proj-filter')?.value||'';
+  const fMonth=document.getElementById('log-month-filter')?.value||'';
+  let list=entries.filter(e=>{
+    if(!currentUser?.isAdmin&&e.uid!==currentUser?.uid) return false;
+    if(fProj&&e.projId!==fProj) return false;
+    if(fMonth&&!e.date.startsWith(fMonth)) return false;
+    return true;
+  });
+  if(!list.length){el.innerHTML='<div class="empty">אין דיווחים</div>';return;}
+  const byDate={};
+  list.forEach(e=>{(byDate[e.date]=byDate[e.date]||[]).push(e);});
+  el.innerHTML=Object.entries(byDate).sort((a,b)=>b[0].localeCompare(a[0])).map(([date,dl])=>{
+    const tot=dl.reduce((a,e)=>a+e.hours,0);
+    const totV=dl.reduce((a,e)=>a+(e.value||0),0);
+    const [y,m,d]=date.split('-');
+    return `<div class="card mb-sm">
+      <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+        <span style="font-weight:700">${d}/${m}/${y}</span>
+        <span style="color:var(--text2)">${tot.toFixed(1)}ש׳${currentUser?.isAdmin&&totV?' · '+fmtMoney(totV):''}</span>
+      </div>
+      ${[...dl].sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')).map(e=>{
+        const p=getProj(e.projId);
+        const canDel=currentUser?.isAdmin||e.uid===currentUser?.uid;
+        return `<div class="list-row">
+          <span class="dot" style="background:${p.color}"></span>
+          <span style="flex:1">${p.name}</span>
+          ${currentUser?.isAdmin?`<span class="tag" style="background:${getMember(e.uid).color}22;color:${getMember(e.uid).color}">${e.userName||''}</span>`:''}
+          <span style="color:var(--text2);font-size:13px">${e.startTime||''}–${e.endTime||''}</span>
+          ${e.note?`<span style="color:var(--text3);font-size:13px">${e.note}</span>`:''}
+          <span style="font-weight:700">${e.hours.toFixed(1)}ש׳</span>
+          ${canDel?`<button class="icon-btn" onclick="deleteEntry('${e.id}')">×</button>`:''}
+        </div>`;
+      }).join('')}
+    </div>`;
+  }).join('');
+}
+
+// calendar
+let calMonth=thisMonth();
+window.prevMonth=()=>{const[y,m]=calMonth.split('-').map(Number);const d=new Date(y,m-2,1);calMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;renderCalendar();};
+window.nextMonth=()=>{const[y,m]=calMonth.split('-').map(Number);const d=new Date(y,m,1);calMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;renderCalendar();};
 
 function renderCalendar() {
-  const [y,m]=calMonth.split('-').map(Number);
-  const MONTH_NAMES=['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
-  const DAY_NAMES=['א','ב','ג','ד','ה','ו','ש'];
-  document.getElementById('cal-month-label').textContent=`${MONTH_NAMES[m-1]} ${y}`;
-  
+  const[y,m]=calMonth.split('-').map(Number);
+  const MONTHS=['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+  const DAYS=['א','ב','ג','ד','ה','ו','ש'];
+  document.getElementById('cal-month-label').textContent=`${MONTHS[m-1]} ${y}`;
   const firstDow=new Date(y,m-1,1).getDay();
   const totalDays=new Date(y,m,0).getDate();
   const today=todayStr();
-  
-  let html='';
-  html+=DAY_NAMES.map(n=>`<div class="cal-head-cell">${n}</div>`).join('');
-  for(let i=0;i<firstDow;i++) html+='<div class="cal-cell empty"></div>';
-  
+  let html=DAYS.map(n=>`<div class="cal-head">${n}</div>`).join('');
+  for(let i=0;i<firstDow;i++) html+='<div></div>';
   for(let d=1;d<=totalDays;d++){
     const ds=`${calMonth}-${String(d).padStart(2,'0')}`;
-    const dayEntries=entries.filter(e=>e.date===ds&&(currentUser?.isAdmin||e.uid===currentUser?.uid));
-    const total=dayEntries.reduce((a,e)=>a+e.hours,0);
+    const de=entries.filter(e=>e.date===ds&&(currentUser?.isAdmin||e.uid===currentUser?.uid));
+    const tot=de.reduce((a,e)=>a+e.hours,0);
     const isToday=ds===today;
     const dow=new Date(y,m-1,d).getDay();
-    const isWeekend=dow===5||dow===6;
-    
-    // get project colors for dots
-    const projIds=[...new Set(dayEntries.map(e=>e.projId))];
-    const dots=projIds.slice(0,3).map(id=>{const p=getProj(id);return`<span style="width:6px;height:6px;border-radius:50%;background:${p.color};display:inline-block;margin:0 1px"></span>`;}).join('');
-    
-    html+=`<div class="cal-cell${isToday?' today':''}${isWeekend?' weekend':''}">
-      <div class="cal-day-num">${d}</div>
-      ${total?`<div style="font-size:10px;font-weight:600;color:var(--accent)">${total.toFixed(1)}ש׳</div>`:''}
+    const isWknd=dow===5||dow===6;
+    const dots=[...new Set(de.map(e=>e.projId))].slice(0,3).map(id=>{
+      const p=getProj(id);return`<span style="width:7px;height:7px;border-radius:50%;background:${p.color};display:inline-block;margin:0 1px"></span>`;
+    }).join('');
+    html+=`<div class="cal-cell${isToday?' cal-today':''}${isWknd?' cal-wknd':''}">
+      <div class="cal-num">${d}</div>
+      ${tot?`<div style="font-size:11px;font-weight:700;color:var(--accent)">${tot.toFixed(1)}ש׳</div>`:''}
       <div>${dots}</div>
     </div>`;
   }
   document.getElementById('cal-grid').innerHTML=html;
 }
+
+// ── SUMMARY ───────────────────────────────────────────────────────────────────
+let sumPeriod='month';
+window.setSumPeriod=(p,btn)=>{sumPeriod=p;document.querySelectorAll('.sum-tab').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderSummary();};
+
+function renderSummary() {
+  let f=entries.filter(e=>currentUser?.isAdmin||e.uid===currentUser?.uid);
+  if(sumPeriod==='month') f=f.filter(e=>e.date.startsWith(thisMonth()));
+  else if(sumPeriod==='week'){
+    const now=new Date(),mon=new Date(now);mon.setDate(now.getDate()-((now.getDay()+6)%7));
+    f=f.filter(e=>e.date>=mon.toISOString().slice(0,10)&&e.date<=todayStr());
+  }
+  const totalH=f.reduce((a,e)=>a+e.hours,0);
+  const totalV=f.reduce((a,e)=>a+(e.value||0),0);
+  const days=[...new Set(f.map(e=>e.date))].length;
+  const avgDay=days?totalH/days:0;
+  const metricsEl=document.getElementById('sum-metrics');
+  if(!metricsEl) return;
+  metricsEl.innerHTML=`
+    <div class="metric-card"><div class="metric-val">${totalH.toFixed(1)}</div><div class="metric-lbl">שעות</div></div>
+    ${currentUser?.isAdmin?`<div class="metric-card"><div class="metric-val" style="font-size:18px">${fmtMoney(totalV)}</div><div class="metric-lbl">שווי</div></div>`:''}
+    <div class="metric-card"><div class="metric-val">${days}</div><div class="metric-lbl">ימים</div></div>
+    <div class="metric-card"><div class="metric-val">${avgDay.toFixed(1)}</div><div class="metric-lbl">ממוצע/יום</div></div>`;
+  const byProj={};
+  f.forEach(e=>{if(!byProj[e.projId])byProj[e.projId]={h:0,v:0};byProj[e.projId].h+=e.hours;byProj[e.projId].v+=e.value||0;});
+  const bdEl=document.getElementById('sum-breakdown');
+  if(!bdEl) return;
+  const sorted=Object.entries(byProj).sort((a,b)=>b[1].h-a[1].h);
+  if(!sorted.length){bdEl.innerHTML='<div class="empty">אין נתונים</div>';return;}
+  bdEl.innerHTML=sorted.map(([id,{h,v}])=>{
+    const p=getProj(id);
+    const bpct=(sumPeriod==='month'&&p.budget)?Math.min(Math.round(h/p.budget*100),100):totalH?Math.round(h/totalH*100):0;
+    const barColor=(sumPeriod==='month'&&p.budget&&h/p.budget>=1)?'#ef4444':(sumPeriod==='month'&&p.budget&&h/p.budget>=0.8)?'#f59e0b':p.color;
+    return `<div style="margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+        <span style="display:flex;align-items:center;gap:6px;font-weight:600"><span class="dot" style="background:${p.color}"></span>${p.name}</span>
+        <span style="color:var(--text2)">${h.toFixed(1)}ש׳${currentUser?.isAdmin&&v?' · '+fmtMoney(v):''}</span>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill" style="width:${bpct}%;background:${barColor}"></div></div>
+      ${sumPeriod==='month'&&p.budget?`<div style="font-size:12px;color:var(--text2);margin-top:3px">${h.toFixed(1)}/${p.budget} ש׳ · ${Math.round(h/p.budget*100)}%</div>`:''}
+    </div>`;
+  }).join('');
+  const perUserEl=document.getElementById('sum-per-user');
+  if(!perUserEl) return;
+  if(currentUser?.isAdmin){
+    const byU={};
+    f.forEach(e=>{if(!byU[e.uid])byU[e.uid]={h:0,v:0,name:e.userName||e.uid};byU[e.uid].h+=e.hours;byU[e.uid].v+=e.value||0;});
+    const us=Object.values(byU).sort((a,b)=>b.h-a.h);
+    perUserEl.innerHTML=`<div class="card mb-sm"><div class="section-title">לפי עובד</div>
+      ${us.map(u=>`<div class="list-row"><span style="flex:1;font-weight:600">${u.name}</span>
+        <span style="color:var(--text2)">${u.h.toFixed(1)}ש׳</span>
+        ${u.v?`<span class="badge-green">${fmtMoney(u.v)}</span>`:''}
+      </div>`).join('')}</div>`;
+  } else perUserEl.innerHTML='';
+}
+
+// ── DASHBOARD ─────────────────────────────────────────────────────────────────
+function renderDashboard() {
+  const el=document.getElementById('dash-content');
+  if(!el) return;
+  const month=document.getElementById('dash-month')?.value||thisMonth();
+  const [y,m]=month.split('-').map(Number);
+  const MONTHS=['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+  const monthName=MONTHS[m-1];
+
+  // filter entries for this month
+  const monthEntries=entries.filter(e=>e.date.startsWith(month)&&(currentUser?.isAdmin||e.uid===currentUser?.uid));
+
+  // total budget
+  const totalBudget=projects.reduce((a,p)=>a+(p.budget||0),0);
+  const totalUsed=monthEntries.reduce((a,e)=>a+e.hours,0);
+  const totalValue=monthEntries.reduce((a,e)=>a+(e.value||0),0);
+  const pctUsed=totalBudget?Math.min(Math.round(totalUsed/totalBudget*100),100):0;
+
+  // days info
+  const today=new Date();
+  const daysInMonth=new Date(y,m,0).getDate();
+  const dayOfMonth=month===thisMonth().slice(0,7)?today.getDate():daysInMonth;
+  const pctMonth=Math.round(dayOfMonth/daysInMonth*100);
+
+  // pace alert
+  let paceColor='#22c55e', paceText='בקצב טוב 🟢';
+  if(totalBudget>0){
+    const expected=totalBudget*(pctMonth/100);
+    const ratio=totalUsed/expected;
+    if(ratio<0.7){paceColor='#ef4444';paceText='מפגר מאוד 🔴';}
+    else if(ratio<0.85){paceColor='#f59e0b';paceText='קצת מפגר 🟡';}
+    else if(totalUsed>totalBudget){paceColor='#ef4444';paceText='חריגה מהתקציב 🔴';}
+  }
+
+  // per project
+  const byProj={};
+  projects.forEach(p=>{byProj[p.id]={proj:p,used:0,value:0};});
+  monthEntries.forEach(e=>{if(byProj[e.projId]){byProj[e.projId].used+=e.hours;byProj[e.projId].value+=e.value||0;}});
+
+  // per member (admin only)
+  const byMember={};
+  monthEntries.forEach(e=>{
+    if(!byMember[e.uid])byMember[e.uid]={name:e.userName||e.uid,uid:e.uid,hours:0,value:0};
+    byMember[e.uid].hours+=e.hours;byMember[e.uid].value+=e.value||0;
+  });
+
+  el.innerHTML=`
+    <!-- TOP METRICS -->
+    <div class="dash-metrics">
+      <div class="dash-metric">
+        <div class="dash-metric-val">${totalUsed.toFixed(1)}<span style="font-size:14px;font-weight:400"> ש׳</span></div>
+        <div class="dash-metric-lbl">מתוך ${totalBudget} ש׳</div>
+        <div class="dash-metric-sub" style="color:${paceColor}">${paceText}</div>
+      </div>
+      ${currentUser?.isAdmin?`<div class="dash-metric">
+        <div class="dash-metric-val" style="font-size:20px">${fmtMoney(totalValue)}</div>
+        <div class="dash-metric-lbl">שווי כולל</div>
+        <div class="dash-metric-sub">${monthName} ${y}</div>
+      </div>`:''}
+      <div class="dash-metric">
+        <div class="dash-metric-val">${pctUsed}%</div>
+        <div class="dash-metric-lbl">מהתקציב</div>
+        <div class="dash-metric-sub">${pctMonth}% מהחודש עבר</div>
+      </div>
+    </div>
+
+    <!-- BUDGET BAR -->
+    <div class="card mb-sm">
+      <div class="section-title">תקציב מול ביצוע</div>
+      ${Object.values(byProj).filter(x=>x.proj.budget).map(({proj:p,used,value})=>{
+        const pct=p.budget?Math.min(Math.round(used/p.budget*100),100):0;
+        const barColor=used/p.budget>=1?'#ef4444':used/p.budget>=0.8?'#f59e0b':p.color;
+        return `<div style="margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span style="display:flex;align-items:center;gap:6px;font-weight:600"><span class="dot" style="background:${p.color}"></span>${p.name}</span>
+            <span style="color:var(--text2);font-size:14px">${used.toFixed(1)}/${p.budget} ש׳ · <span style="font-weight:700;color:${barColor}">${Math.round(used/p.budget*100)}%</span></span>
+          </div>
+          <div class="bar-wrap" style="height:10px"><div class="bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+          ${currentUser?.isAdmin&&value?`<div style="font-size:12px;color:var(--text2);margin-top:3px">שווי: ${fmtMoney(value)}</div>`:''}
+        </div>`;
+      }).join('')}
+      ${!Object.values(byProj).some(x=>x.proj.budget)?'<div class="empty">הגדר תקציב לפרויקטים בהגדרות</div>':''}
+    </div>
+
+    ${currentUser?.isAdmin?`
+    <!-- PER MEMBER -->
+    <div class="card mb-sm">
+      <div class="section-title">ריכוז לפי עובד — ${monthName}</div>
+      ${Object.values(byMember).length?Object.values(byMember).sort((a,b)=>b.hours-a.hours).map(u=>{
+        const m=getMember(u.uid);
+        return `<div class="list-row">
+          <span class="dot" style="background:${m.color}"></span>
+          <span style="flex:1;font-weight:600">${u.name}</span>
+          <span style="color:var(--text2)">${u.hours.toFixed(1)} ש׳</span>
+          <span class="badge-green">${fmtMoney(u.value)}</span>
+        </div>`;
+      }).join(''):'<div class="empty">אין דיווחים לחודש זה</div>'}
+    </div>`:''}
+  `;
+}
+
+window.onDashMonthChange = () => renderDashboard();
 
 // ── EXPORT ────────────────────────────────────────────────────────────────────
 window.exportExcel = () => {
@@ -503,14 +530,13 @@ window.exportExcel = () => {
   }).sort((a,b)=>a.date.localeCompare(b.date));
   if(!list.length){showToast('אין נתונים');return;}
   const wb=XLSX.utils.book_new();
-  const rows=[['תאריך','עובד','פרויקט','שעת התחלה','שעת סיום','שעות','שווי','הערה']];
-  list.forEach(e=>{const p=getProj(e.projId);rows.push([e.date,e.userName||'',p.name,e.startTime||'',e.endTime||'',e.hours,currentUser?.isAdmin?e.value||'':'',e.note||'']);});
+  const rows=[['תאריך','עובד','פרויקט','שעת התחלה','שעת סיום','שעות',...(currentUser?.isAdmin?['שווי']:['']),'הערה']];
+  list.forEach(e=>{const p=getProj(e.projId);rows.push([e.date,e.userName||'',p.name,e.startTime||'',e.endTime||'',e.hours,...(currentUser?.isAdmin?[e.value||'']:['']),e.note||'']);});
   const ws=XLSX.utils.aoa_to_sheet(rows);
   ws['!cols']=[{wch:12},{wch:15},{wch:18},{wch:12},{wch:12},{wch:8},{wch:10},{wch:30}];
   XLSX.utils.book_append_sheet(wb,ws,'דיווחים');
   XLSX.writeFile(wb,`שעות_${fMonth||'כל_הזמן'}.xlsx`);
 };
-
 window.exportCSV = () => {
   const fProj=document.getElementById('exp-proj').value;
   const fMonth=document.getElementById('exp-month').value;
@@ -532,204 +558,256 @@ window.exportCSV = () => {
 window.showPage = (name) => {
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
-  document.getElementById('page-'+name).classList.add('active');
-  document.getElementById('nav-'+name).classList.add('active');
-  const titles={report:'דיווח שעות',log:'יומן',summary:'סיכום',settings:'הגדרות'};
+  document.getElementById('page-'+name)?.classList.add('active');
+  document.getElementById('nav-'+name)?.classList.add('active');
+  const titles={dashboard:'דשבורד',report:'דיווח שעות',log:'יומן',summary:'סיכום',settings:'הגדרות'};
   document.getElementById('page-title').textContent=titles[name]||name;
   if(name==='log'){renderLog();}
   if(name==='summary'){renderSummary();}
   if(name==='settings'){renderProjectsSettings();renderTeamSettings();}
-  if(name==='log') { setTimeout(()=>{ document.getElementById('cal-tab-btn') && renderCalendar(); },100); }
+  if(name==='dashboard'){renderDashboard();}
 };
 
-window.setLogTab = (tab, btn) => {
+window.setLogTab=(tab,btn)=>{
   document.querySelectorAll('.log-tab').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  document.getElementById('log-list-view').style.display = tab==='list'?'block':'none';
-  document.getElementById('log-cal-view').style.display = tab==='cal'?'block':'none';
-  if(tab==='cal') renderCalendar();
+  document.getElementById('log-list-view').style.display=tab==='list'?'block':'none';
+  document.getElementById('log-cal-view').style.display=tab==='cal'?'block':'none';
+  if(tab==='cal'){calMonth=document.getElementById('log-month-filter')?.value||thisMonth();renderCalendar();}
 };
 
 window.showToast = (msg) => {
   const t=document.getElementById('toast');
-  t.textContent=msg; t.classList.add('show');
+  t.textContent=msg;t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),2500);
 };
 
-// auto-calculate hours display
-document.addEventListener('DOMContentLoaded', () => {
-  const updateHours = () => {
-    const start=document.getElementById('r-start')?.value;
-    const end=document.getElementById('r-end')?.value;
-    if(start&&end) {
-      const mins=timeToMinutes(end)-timeToMinutes(start);
-      if(mins>0) document.getElementById('r-hours-display').textContent=`${(mins/60).toFixed(1)} שעות`;
-      else document.getElementById('r-hours-display').textContent='';
-    }
-  };
-  document.getElementById('r-start')?.addEventListener('change',updateHours);
-  document.getElementById('r-end')?.addEventListener('change',updateHours);
+// ── INIT ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadTeam();
+  const saved=localStorage.getItem('wt_user');
+  if(saved){
+    currentUser=JSON.parse(saved);
+    await loadProjects();
+    subscribeEntries();
+    showPage('dashboard');
+    document.getElementById('login-screen').style.display='none';
+    document.getElementById('app-shell').style.display='flex';
+    document.getElementById('user-name').textContent=currentUser.name;
+    if(currentUser.isAdmin) document.getElementById('admin-badge').style.display='inline-flex';
+    document.getElementById('r-date').value=todayStr();
+    document.getElementById('log-month-filter').value=thisMonth();
+    document.getElementById('exp-month').value=thisMonth();
+    document.getElementById('dash-month').value=thisMonth();
+  }
+  // hours preview
+  ['r-start','r-end'].forEach(id=>{
+    document.getElementById(id)?.addEventListener('change',()=>{
+      const s=document.getElementById('r-start').value;
+      const e=document.getElementById('r-end').value;
+      if(s&&e){const mins=timeToMins(e)-timeToMins(s);if(mins>0)document.getElementById('r-hours-display').textContent=`${(mins/60).toFixed(1)} שעות`;else document.getElementById('r-hours-display').textContent='';}
+    });
+  });
 });
 </script>
 
 <style>
 :root{
-  --bg:#0d1117;--bg2:#161b22;--bg3:#1c2230;--bg4:#21262d;
-  --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.13);
-  --text:#e6edf3;--text2:#8b949e;--text3:#484f58;
-  --accent:#6e76f5;--green:#3fb950;--yellow:#d29922;--red:#f85149;
-  --r:12px;--r-sm:8px;
+  --bg:#f8f9fb;--bg2:#ffffff;--bg3:#f0f2f5;--bg4:#e8eaed;
+  --border:#e2e5ea;--border2:#d0d4db;
+  --text:#1a1d23;--text2:#5a6175;--text3:#9aa0b0;
+  --accent:#5b61e8;--accent-light:#eef0fd;
+  --green:#16a34a;--green-light:#dcfce7;
+  --yellow:#d97706;--yellow-light:#fef3c7;
+  --red:#dc2626;--red-light:#fee2e2;
+  --r:14px;--r-sm:10px;--r-xs:6px;
   --font:'Heebo',sans-serif;
+  --shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06);
   --st:env(safe-area-inset-top,0px);--sb:env(safe-area-inset-bottom,0px);
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overflow:hidden;background:var(--bg)}
-body{font-family:var(--font);color:var(--text);direction:rtl;font-size:15px}
-button,input,select{font-family:var(--font);outline:none;font-size:15px}
-input,select{background:var(--bg3);border:1px solid var(--border2);color:var(--text);border-radius:var(--r-sm);padding:10px 13px;width:100%}
+body{font-family:var(--font);color:var(--text);direction:rtl;font-size:16px;-webkit-text-size-adjust:100%}
+button,input,select,textarea{font-family:var(--font);font-size:16px;outline:none}
+input,select{background:var(--bg2);border:1.5px solid var(--border);color:var(--text);border-radius:var(--r-sm);padding:11px 14px;width:100%;transition:border-color .15s}
+input:focus,select:focus{border-color:var(--accent)}
 input::placeholder{color:var(--text3)}
-input[type=color]{padding:3px;cursor:pointer;height:40px}
-button{cursor:pointer;border:none;font-weight:500}
-.btn{background:var(--accent);color:#fff;border-radius:var(--r-sm);padding:11px 16px}
-.btn:active{opacity:.8}
-.btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border2);border-radius:var(--r-sm);padding:10px 14px}
+input[type=color]{padding:3px;cursor:pointer;height:44px}
+button{cursor:pointer;border:none;font-weight:600}
+.btn{background:var(--accent);color:#fff;border-radius:var(--r-sm);padding:12px 18px;box-shadow:var(--shadow)}
+.btn:active{opacity:.85;transform:scale(.98)}
+.btn-ghost{background:var(--bg2);color:var(--text);border:1.5px solid var(--border);border-radius:var(--r-sm);padding:11px 16px}
 .icon-btn{background:none;color:var(--text3);padding:4px 8px;font-size:20px;line-height:1}
+.icon-btn:hover{color:var(--red)}
 
 /* LOGIN */
 #login-screen{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
-  height:100dvh;background:var(--bg);gap:16px;padding:40px;
+  height:100dvh;background:linear-gradient(135deg,#f0f4ff 0%,#f8f9fb 100%);
+  gap:20px;padding:40px;
 }
-#login-screen h1{font-size:30px;font-weight:700}
-#login-screen p{color:var(--text2);text-align:center;font-size:16px}
-.login-card{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);padding:24px;width:100%;max-width:340px;display:flex;flex-direction:column;gap:12px}
-#login-error{color:var(--red);font-size:13px;display:none;text-align:center}
+.login-icon{font-size:52px;margin-bottom:4px}
+#login-screen h1{font-size:32px;font-weight:700;color:var(--accent)}
+#login-screen p{color:var(--text2);font-size:16px}
+.login-card{background:var(--bg2);border-radius:var(--r);padding:28px 24px;width:100%;max-width:360px;display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow-md);border:1px solid var(--border)}
+#login-error{color:var(--red);font-size:14px;display:none;text-align:center;padding:8px;background:var(--red-light);border-radius:var(--r-xs)}
 
-/* APP */
+/* APP SHELL */
 #app-shell{display:none;flex-direction:column;height:100dvh;padding-top:var(--st)}
-#topbar{padding:13px 16px 11px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;background:var(--bg)}
-#topbar h1{font-size:18px;font-weight:700;letter-spacing:-.4px}
+#topbar{
+  padding:14px 18px 12px;border-bottom:1px solid var(--border);flex-shrink:0;
+  display:flex;align-items:center;justify-content:space-between;
+  background:var(--bg2);box-shadow:var(--shadow);
+}
+#topbar h1{font-size:18px;font-weight:700;color:var(--text)}
 .user-info{display:flex;align-items:center;gap:8px}
-#user-name{font-size:13px;color:var(--text2)}
-#admin-badge{display:none;background:var(--accent);color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px}
-.badge-admin{background:var(--accent);color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px}
-.logout-btn{background:none;color:var(--text3);font-size:13px;padding:5px 10px;border:1px solid var(--border2);border-radius:6px}
+#user-name{font-size:14px;color:var(--text2);font-weight:500}
+#admin-badge{display:none;background:var(--accent);color:#fff;font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;align-items:center}
+.badge{background:var(--accent);color:#fff;font-size:12px;font-weight:700;padding:2px 9px;border-radius:20px}
+.badge-green{background:var(--green-light);color:var(--green);font-size:13px;font-weight:600;padding:2px 9px;border-radius:20px}
+.tag{font-size:12px;font-weight:600;padding:2px 8px;border-radius:20px}
+.logout-btn{background:var(--bg3);color:var(--text2);font-size:13px;font-weight:600;padding:6px 12px;border:1px solid var(--border);border-radius:var(--r-xs)}
 
-#content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 14px calc(70px + var(--sb) + 14px)}
+#content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 16px calc(72px + var(--sb) + 16px)}
 
-#navbar{position:fixed;bottom:0;left:0;right:0;padding-bottom:var(--sb);background:var(--bg2);border-top:1px solid var(--border);display:flex;z-index:100}
-.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;border:none;background:none;color:var(--text3);font-size:11px;font-weight:500;transition:color .15s}
+#navbar{
+  position:fixed;bottom:0;left:0;right:0;padding-bottom:var(--sb);
+  background:var(--bg2);border-top:1px solid var(--border);display:flex;
+  z-index:100;box-shadow:0 -1px 3px rgba(0,0,0,.06);
+}
+.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 4px;border:none;background:none;color:var(--text3);font-size:11px;font-weight:600;transition:color .15s}
 .nav-btn.active{color:var(--accent)}
-.nav-icon{font-size:23px;line-height:1}
+.nav-btn.active .nav-icon{background:var(--accent-light);border-radius:10px}
+.nav-icon{font-size:22px;line-height:1;padding:4px 12px;border-radius:10px;transition:background .15s}
 
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;margin-bottom:12px}
-.card-title{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px}
+/* CARDS */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px;box-shadow:var(--shadow)}
+.mb-sm{margin-bottom:12px}
+.section-title{font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px}
 
-.metrics{display:grid;gap:8px;margin-bottom:12px}
-.metrics.cols-3{grid-template-columns:repeat(3,1fr)}
-.metrics.cols-4{grid-template-columns:repeat(4,1fr)}
-.metric{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 6px;text-align:center}
-.metric-val{font-size:19px;font-weight:700;line-height:1.1}
-.metric-label{font-size:11px;color:var(--text2);margin-top:4px}
+/* METRICS */
+.metric-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;text-align:center;box-shadow:var(--shadow)}
+.metric-val{font-size:26px;font-weight:700;color:var(--text)}
+.metric-lbl{font-size:12px;color:var(--text2);margin-top:4px;font-weight:500}
 
-.bar-wrap{background:var(--bg4);border-radius:4px;height:7px;overflow:hidden}
-.bar-fill{height:100%;border-radius:4px;transition:width .4s}
+/* DASH */
+.dash-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px}
+.dash-metric{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px;text-align:center;box-shadow:var(--shadow)}
+.dash-metric-val{font-size:24px;font-weight:700;color:var(--accent)}
+.dash-metric-lbl{font-size:13px;color:var(--text2);margin-top:4px;font-weight:500}
+.dash-metric-sub{font-size:12px;color:var(--text3);margin-top:3px}
+
+/* BAR */
+.bar-wrap{background:var(--bg3);border-radius:6px;height:8px;overflow:hidden}
+.bar-fill{height:100%;border-radius:6px;transition:width .5s}
+
+/* DOT */
 .dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0}
 
-.alert{border-radius:var(--r-sm);padding:11px 14px;font-size:14px;margin-bottom:8px;display:flex;gap:8px;line-height:1.4}
-.alert-warn{background:rgba(210,153,34,.15);color:var(--yellow);border:1px solid rgba(210,153,34,.25)}
-.alert-danger{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.25)}
+/* ALERTS */
+.alert{border-radius:var(--r-sm);padding:12px 16px;font-size:14px;margin-bottom:10px;display:flex;gap:8px;font-weight:500}
+.alert-warn{background:var(--yellow-light);color:var(--yellow);border:1px solid #fde68a}
+.alert-danger{background:var(--red-light);color:var(--red);border:1px solid #fca5a5}
 
-.list-row{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border);font-size:14px}
+/* LIST */
+.list-row{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--border);font-size:15px}
 .list-row:last-child{border-bottom:none}
 
-.inner-tabs{display:flex;gap:4px;margin-bottom:14px;background:var(--bg3);border-radius:var(--r-sm);padding:3px}
-.inner-tab{flex:1;padding:8px;text-align:center;font-size:13px;font-weight:500;color:var(--text3);border-radius:6px;border:none;background:none;cursor:pointer;transition:all .15s}
-.inner-tab.active{background:var(--bg2);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.3)}
+/* TABS */
+.inner-tabs{display:flex;gap:4px;margin-bottom:14px;background:var(--bg3);border-radius:var(--r-sm);padding:4px}
+.inner-tab{flex:1;padding:9px;text-align:center;font-size:14px;font-weight:600;color:var(--text2);border-radius:8px;border:none;background:none;cursor:pointer;transition:all .15s}
+.inner-tab.active{background:var(--bg2);color:var(--accent);box-shadow:var(--shadow)}
 
-.empty{text-align:center;padding:30px 0;color:var(--text3);font-size:14px}
+/* HOURS PREVIEW */
+.hours-preview{font-size:15px;color:var(--accent);font-weight:700;min-height:22px;margin:6px 0}
 
-#toast{position:fixed;bottom:calc(72px + var(--sb) + 10px);left:50%;transform:translateX(-50%) translateY(20px);background:var(--bg3);border:1px solid var(--border2);border-radius:var(--r-sm);padding:11px 18px;font-size:14px;font-weight:500;opacity:0;transition:all .25s;pointer-events:none;white-space:nowrap;z-index:200}
+/* EMPTY */
+.empty{text-align:center;padding:30px 0;color:var(--text3);font-size:15px}
+
+/* CALENDAR */
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.cal-head{text-align:center;font-size:12px;color:var(--text3);padding:6px 0;font-weight:700}
+.cal-cell{border-radius:8px;padding:5px 3px;min-height:62px;border:1.5px solid transparent;font-size:10px;background:var(--bg3);cursor:pointer;transition:border-color .15s}
+.cal-cell:hover{border-color:var(--accent)}
+.cal-today{border-color:var(--accent)!important;background:var(--accent-light)}
+.cal-wknd{opacity:.35}
+.cal-num{font-weight:700;font-size:13px;color:var(--text2);margin-bottom:3px}
+
+/* TOAST */
+#toast{position:fixed;bottom:calc(74px + var(--sb) + 10px);left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:#fff;border-radius:var(--r-sm);padding:12px 20px;font-size:15px;font-weight:600;opacity:0;transition:all .25s;pointer-events:none;white-space:nowrap;z-index:200;box-shadow:var(--shadow-md)}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
+/* PAGES */
 .page{display:none}
 .page.active{display:block}
 
-/* CALENDAR */
-.cal-grid-wrap{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
-.cal-head-cell{text-align:center;font-size:11px;color:var(--text3);padding:5px 0;font-weight:600}
-.cal-cell{border-radius:6px;padding:5px 3px;min-height:58px;border:1px solid transparent;font-size:10px}
-.cal-cell.empty{background:none}
-.cal-cell:not(.empty):not(.weekend){background:var(--bg3);border-color:var(--border)}
-.cal-cell.weekend{opacity:.25}
-.cal-cell.today{border-color:var(--accent)!important;border-width:1.5px}
-.cal-day-num{font-weight:600;font-size:12px;color:var(--text2);margin-bottom:2px}
-
-.hours-preview{font-size:13px;color:var(--accent);font-weight:600;margin-top:4px;min-height:20px}
-
-::-webkit-scrollbar{width:3px}
-::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
 </style>
 </head>
 <body>
 
 <!-- LOGIN -->
 <div id="login-screen">
-  <div style="font-size:44px">⏱</div>
+  <div class="login-icon">⏱</div>
   <h1>מעקב שעות</h1>
   <p>מערכת דיווח שעות לצוות</p>
   <div class="login-card">
-    <select id="login-name" style="font-size:15px"></select>
-    <input type="password" id="login-code" placeholder="קוד אישי" maxlength="10"/>
+    <select id="login-name"></select>
+    <input type="password" id="login-code" placeholder="קוד אישי" maxlength="10"
+      onkeydown="if(event.key==='Enter') doLogin()"/>
     <div id="login-error"></div>
-    <button class="btn" onclick="doLogin()">כניסה ←</button>
+    <button class="btn" onclick="doLogin()" style="width:100%">כניסה ←</button>
   </div>
 </div>
 
 <!-- APP -->
 <div id="app-shell">
   <div id="topbar">
-    <h1 id="page-title">דיווח שעות</h1>
+    <h1 id="page-title">דשבורד</h1>
     <div class="user-info">
       <span id="user-name"></span>
-      <span id="admin-badge">מנהל</span>
+      <span id="admin-badge">👑 מנהל</span>
       <button class="logout-btn" onclick="doLogout()">יציאה</button>
     </div>
   </div>
 
   <div id="content">
 
+    <!-- DASHBOARD -->
+    <div class="page active" id="page-dashboard">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+        <input type="month" id="dash-month" onchange="onDashMonthChange()" style="flex:1"/>
+      </div>
+      <div id="dash-content"></div>
+    </div>
+
     <!-- REPORT -->
-    <div class="page active" id="page-report">
+    <div class="page" id="page-report">
       <div id="report-alerts"></div>
-      <div class="card">
-        <div class="card-title">דיווח חדש</div>
-        <div style="margin-bottom:10px">
-          <input type="date" id="r-date"/>
-        </div>
-        <div style="margin-bottom:10px">
-          <select id="r-proj"></select>
-        </div>
-        <div style="display:flex;gap:8px;margin-bottom:4px">
+      <div class="card mb-sm">
+        <div class="section-title">דיווח חדש</div>
+        <div style="margin-bottom:12px"><input type="date" id="r-date"/></div>
+        <div style="margin-bottom:12px"><select id="r-proj"></select></div>
+        <div style="display:flex;gap:10px;margin-bottom:6px">
           <div style="flex:1">
-            <div style="font-size:12px;color:var(--text2);margin-bottom:4px">שעת התחלה</div>
+            <div style="font-size:13px;color:var(--text2);margin-bottom:5px;font-weight:600">שעת התחלה</div>
             <input type="time" id="r-start"/>
           </div>
           <div style="flex:1">
-            <div style="font-size:12px;color:var(--text2);margin-bottom:4px">שעת סיום</div>
+            <div style="font-size:13px;color:var(--text2);margin-bottom:5px;font-weight:600">שעת סיום</div>
             <input type="time" id="r-end"/>
           </div>
         </div>
         <div class="hours-preview" id="r-hours-display"></div>
-        <div style="margin:10px 0">
-          <input type="text" id="r-note" placeholder="הערה (אופציונלי)"/>
-        </div>
+        <div style="margin-bottom:12px"><input type="text" id="r-note" placeholder="הערה (אופציונלי)"/></div>
         <button class="btn" style="width:100%" onclick="addEntry()">+ הוסף דיווח</button>
       </div>
       <div class="card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-          <div class="card-title" style="margin-bottom:0">דיווחים היום</div>
-          <div id="today-total" style="font-size:13px;color:var(--text2)"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div class="section-title" style="margin-bottom:0">דיווחים היום</div>
+          <div id="today-total" style="font-size:14px;color:var(--text2);font-weight:600"></div>
         </div>
         <div id="today-list"></div>
       </div>
@@ -738,49 +816,50 @@ button{cursor:pointer;border:none;font-weight:500}
     <!-- LOG -->
     <div class="page" id="page-log">
       <div class="inner-tabs">
-        <button class="inner-tab log-tab active" onclick="setLogTab('list',this)">רשימה</button>
-        <button class="inner-tab log-tab" id="cal-tab-btn" onclick="setLogTab('cal',this)">לוח חודשי</button>
+        <button class="inner-tab log-tab active" onclick="setLogTab('list',this)">📋 רשימה</button>
+        <button class="inner-tab log-tab" onclick="setLogTab('cal',this)">📅 לוח חודשי</button>
       </div>
-
       <div id="log-list-view">
-        <div style="display:flex;gap:8px;margin-bottom:12px">
+        <div style="display:flex;gap:10px;margin-bottom:14px">
           <select id="log-proj-filter" onchange="renderLog()" style="flex:1"></select>
           <input type="month" id="log-month-filter" onchange="renderLog()" style="flex:1"/>
         </div>
         <div id="log-list"></div>
       </div>
-
       <div id="log-cal-view" style="display:none">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <button class="btn-ghost" onclick="prevMonth()" style="padding:8px 16px">→</button>
-          <span id="cal-month-label" style="font-size:16px;font-weight:600"></span>
-          <button class="btn-ghost" onclick="nextMonth()" style="padding:8px 16px">←</button>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <button class="btn-ghost" onclick="prevMonth()" style="padding:10px 18px;font-size:18px">→</button>
+          <span id="cal-month-label" style="font-size:18px;font-weight:700"></span>
+          <button class="btn-ghost" onclick="nextMonth()" style="padding:10px 18px;font-size:18px">←</button>
         </div>
-        <div class="cal-grid-wrap" id="cal-grid"></div>
-        <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px" id="cal-legend"></div>
+        <div class="cal-grid" id="cal-grid"></div>
+        <!-- legend -->
+        <div style="margin-top:14px;display:flex;flex-wrap:wrap;gap:8px">
+          ${projects.map(p=>`<span style="display:flex;align-items:center;gap:5px;font-size:13px"><span class="dot" style="background:${p.color}"></span>${p.name}</span>`).join('')}
+        </div>
       </div>
     </div>
 
     <!-- SUMMARY -->
     <div class="page" id="page-summary">
       <div class="inner-tabs">
-        <button class="inner-tab active" onclick="setSumPeriod('month',this)">החודש</button>
-        <button class="inner-tab" onclick="setSumPeriod('week',this)">השבוע</button>
-        <button class="inner-tab" onclick="setSumPeriod('all',this)">הכל</button>
+        <button class="inner-tab sum-tab active" onclick="setSumPeriod('month',this)">החודש</button>
+        <button class="inner-tab sum-tab" onclick="setSumPeriod('week',this)">השבוע</button>
+        <button class="inner-tab sum-tab" onclick="setSumPeriod('all',this)">הכל</button>
       </div>
-      <div class="metrics cols-4" id="sum-metrics"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:14px" id="sum-metrics"></div>
       <div id="sum-per-user"></div>
-      <div class="card">
-        <div class="card-title">לפי פרויקט</div>
+      <div class="card mb-sm">
+        <div class="section-title">לפי פרויקט</div>
         <div id="sum-breakdown"></div>
       </div>
       <div class="card">
-        <div class="card-title">יצוא</div>
-        <div style="display:flex;gap:8px;margin-bottom:10px">
+        <div class="section-title">יצוא נתונים</div>
+        <div style="display:flex;gap:10px;margin-bottom:12px">
           <select id="exp-proj" style="flex:1"></select>
           <input type="month" id="exp-month" style="flex:1"/>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:10px">
           <button class="btn-ghost" style="flex:1" onclick="exportExcel()">📊 Excel</button>
           <button class="btn-ghost" style="flex:1" onclick="exportCSV()">📄 CSV</button>
         </div>
@@ -789,15 +868,14 @@ button{cursor:pointer;border:none;font-weight:500}
 
     <!-- SETTINGS -->
     <div class="page" id="page-settings">
-
       <!-- PROJECTS -->
-      <div class="card">
-        <div class="card-title">הוסף פרויקט</div>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div class="card mb-sm">
+        <div class="section-title">הוסף פרויקט</div>
+        <div style="display:flex;gap:10px;margin-bottom:10px">
           <div style="flex:1"><input type="text" id="new-proj-name" placeholder="שם הפרויקט"/></div>
-          <input type="color" id="new-proj-color" value="#6e76f5" style="width:44px;height:40px"/>
+          <input type="color" id="new-proj-color" value="#5b61e8" style="width:48px;height:44px"/>
         </div>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
+        <div style="display:flex;gap:10px;margin-bottom:10px">
           <div style="flex:1"><input type="number" id="new-proj-budget" placeholder="תקציב חודשי (ש׳)"/></div>
           <div style="flex:1">
             <select id="new-proj-cadence">
@@ -807,52 +885,56 @@ button{cursor:pointer;border:none;font-weight:500}
             </select>
           </div>
         </div>
-        <div style="margin-bottom:10px">
+        <div style="margin-bottom:12px">
           <input type="number" id="new-proj-rate" placeholder="שווי שעה ₪ (נראה למנהל בלבד)"/>
         </div>
         <button class="btn" style="width:100%" onclick="addProject()">+ הוסף פרויקט</button>
       </div>
-      <div class="card">
-        <div class="card-title">פרויקטים</div>
+      <div class="card mb-sm">
+        <div class="section-title">פרויקטים קיימים</div>
         <div id="projects-list"></div>
       </div>
 
       <!-- TEAM -->
-      <div class="card">
-        <div class="card-title">הוסף עובד לצוות</div>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div class="card mb-sm">
+        <div class="section-title">הוסף עובד לצוות</div>
+        <div style="display:flex;gap:10px;margin-bottom:10px">
           <div style="flex:1"><input type="text" id="new-member-name" placeholder="שם העובד"/></div>
-          <input type="color" id="new-member-color" value="#3fb950" style="width:44px;height:40px"/>
+          <input type="color" id="new-member-color" value="#16a34a" style="width:48px;height:44px"/>
         </div>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
+        <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
           <div style="flex:1"><input type="password" id="new-member-code" placeholder="קוד אישי" maxlength="10"/></div>
-          <div style="display:flex;align-items:center;gap:6px;white-space:nowrap">
-            <input type="checkbox" id="new-member-admin" style="width:auto"/>
-            <label for="new-member-admin" style="font-size:14px">מנהל</label>
-          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:15px;white-space:nowrap;font-weight:500">
+            <input type="checkbox" id="new-member-admin" style="width:18px;height:18px"/>
+            מנהל
+          </label>
         </div>
         <button class="btn" style="width:100%" onclick="addTeamMember()">+ הוסף עובד</button>
       </div>
       <div class="card">
-        <div class="card-title">צוות</div>
+        <div class="section-title">הצוות</div>
         <div id="team-list"></div>
       </div>
     </div>
 
   </div>
 
+  <!-- NAVBAR -->
   <div id="navbar">
-    <button class="nav-btn active" id="nav-report" onclick="showPage('report')">
-      <span class="nav-icon">＋</span>דיווח
+    <button class="nav-btn active" id="nav-dashboard" onclick="showPage('dashboard')">
+      <span class="nav-icon">📊</span><span>דשבורד</span>
+    </button>
+    <button class="nav-btn" id="nav-report" onclick="showPage('report')">
+      <span class="nav-icon">＋</span><span>דיווח</span>
     </button>
     <button class="nav-btn" id="nav-log" onclick="showPage('log')">
-      <span class="nav-icon">📋</span>יומן
+      <span class="nav-icon">📋</span><span>יומן</span>
     </button>
     <button class="nav-btn" id="nav-summary" onclick="showPage('summary')">
-      <span class="nav-icon">📊</span>סיכום
+      <span class="nav-icon">📈</span><span>סיכום</span>
     </button>
     <button class="nav-btn" id="nav-settings" onclick="showPage('settings')">
-      <span class="nav-icon">⚙️</span>הגדרות
+      <span class="nav-icon">⚙️</span><span>הגדרות</span>
     </button>
   </div>
 </div>
