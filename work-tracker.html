@@ -88,11 +88,32 @@ function renderTeamSettings() {
     <div class="list-row">
       <span class="dot" style="background:${m.color}"></span>
       <span style="flex:1;font-weight:600">${m.name}</span>
-      <span style="color:var(--text2);font-size:14px">קוד: ${m.code}</span>
+      <span style="color:var(--text2);font-size:13px">קוד: ${m.code}</span>
       ${m.isAdmin?'<span class="badge">מנהל</span>':''}
+      <button class="icon-btn" onclick="editTeamMember('${m.uid}')" title="ערוך" style="color:var(--accent);font-size:16px">✏️</button>
       <button class="icon-btn" onclick="deleteTeamMember('${m.uid}')">×</button>
     </div>`).join('');
 }
+
+window.editTeamMember = async (id) => {
+  const m = teamMembers.find(x=>x.uid===id);
+  if(!m) return;
+  const newName = prompt('שם:', m.name);
+  if(newName===null) return;
+  const newCode = prompt('קוד אישי:', m.code);
+  if(newCode===null) return;
+  const newAdmin = confirm('האם מנהל?');
+  await setDoc(doc(db,'team',id), {...m, name:newName.trim()||m.name, code:newCode.trim()||m.code, isAdmin:newAdmin});
+  // update localStorage if editing self
+  if(currentUser?.uid===id) {
+    currentUser.name = newName.trim()||m.name;
+    currentUser.isAdmin = newAdmin;
+    localStorage.setItem('wt_user', JSON.stringify(currentUser));
+    document.getElementById('user-name').textContent = currentUser.name;
+  }
+  await loadTeam();
+  showToast('עובד עודכן ✓');
+};
 
 // ── LOGIN ─────────────────────────────────────────────────────────────────────
 window.doLogin = async () => {
@@ -161,9 +182,29 @@ function renderProjectsSettings() {
       <span style="flex:1;font-weight:600">${p.name}</span>
       ${p.budget?`<span style="color:var(--text2);font-size:13px">${p.budget}ש׳</span>`:''}
       ${currentUser?.isAdmin&&p.rate?`<span class="badge-green">${fmtMoney(p.rate)}/ש׳</span>`:''}
+      <button class="icon-btn" onclick="editProject('${p.id}')" title="ערוך" style="color:var(--accent);font-size:16px">✏️</button>
       <button class="icon-btn" onclick="deleteProject('${p.id}')">×</button>
     </div>`).join('');
 }
+
+window.editProject = async (id) => {
+  const p = projects.find(x=>x.id===id);
+  if(!p) return;
+  const newName = prompt('שם פרויקט:', p.name);
+  if(newName===null) return;
+  const newBudget = prompt('תקציב חודשי (שעות):', p.budget||'');
+  if(newBudget===null) return;
+  const newRate = prompt('שווי שעה (₪):', p.rate||'');
+  if(newRate===null) return;
+  await setDoc(doc(db,'projects',id), {
+    ...p,
+    name: newName.trim()||p.name,
+    budget: newBudget===''?null:parseFloat(newBudget)||null,
+    rate: newRate===''?null:parseFloat(newRate)||null
+  });
+  await loadProjects();
+  showToast('פרויקט עודכן ✓');
+};
 
 window.addProject = async () => {
   const name=document.getElementById('new-proj-name').value.trim();
@@ -648,8 +689,8 @@ function renderPlanning() {
   const tableEl = document.getElementById('plan-table');
   if(!tableEl || !activeProjs.length || !teamMembers.length) return;
 
-  const thStyle = 'text-align:center;font-size:12px;color:var(--color-text-secondary);font-weight:500;padding:8px 6px;border-bottom:0.5px solid var(--color-border-tertiary)';
-  const tdStyle = 'padding:8px 6px;border-bottom:0.5px solid var(--color-border-tertiary);text-align:center;vertical-align:middle';
+  const thStyle = 'text-align:center;font-size:13px;color:var(--text2);font-weight:600;padding:8px 6px;border-bottom:1px solid var(--border);white-space:nowrap';
+  const tdStyle = 'padding:8px 6px;border-bottom:1px solid var(--border);text-align:center;vertical-align:middle';
 
   let html = `<thead><tr>
     <th style="text-align:right;${thStyle}">עובד</th>
