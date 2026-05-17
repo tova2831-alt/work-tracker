@@ -5,15 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
-<meta name="apple-mobile-web-app-title" content="מעקב שעות"/>
+<meta name="apple-mobile-web-app-title" content="TCGroup"/>
 <meta name="theme-color" content="#ffffff"/>
-<title>מעקב שעות</title>
+<title>TCGroup — מעקב שעות</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getFirestore, collection, doc, addDoc, getDocs, deleteDoc, query, where, orderBy, onSnapshot, setDoc, getDoc, updateDoc }
+import { getFirestore, collection, doc, addDoc, getDocs, deleteDoc, query, where, orderBy, onSnapshot, setDoc, getDoc }
   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 const firebaseConfig = {
@@ -28,105 +28,103 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
+// ── STATE ─────────────────────────────────────────────────────────────────────
 let currentUser = null;
+let clients = [];
 let projects = [];
 let entries = [];
 let teamMembers = [];
 let blockedDays = [];
 let planData = {};
 let availability = {};
+let reportTemplates = [];
 let unsubEntries = null;
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
-function todayStr() { return new Date().toISOString().slice(0,10); }
-function thisMonth() { return todayStr().slice(0,7); }
-function timeToMins(t) { if(!t) return 0; const[h,m]=t.split(':').map(Number); return h*60+m; }
-function fmtMoney(n) { return '₪'+Math.round(n).toLocaleString('he-IL'); }
-function getProj(id) { return projects.find(p=>p.id===id)||{name:'לא ידוע',color:'#888',budget:null,rate:null}; }
-function getMember(uid) { return teamMembers.find(m=>m.uid===uid)||{name:'?',color:'#888'}; }
+const todayStr = () => new Date().toISOString().slice(0,10);
+const thisMonth = () => todayStr().slice(0,7);
+const timeToMins = t => { if(!t) return 0; const[h,m]=t.split(':').map(Number); return h*60+m; };
+const fmtMoney = n => '₪'+Math.round(n).toLocaleString('he-IL');
+const fmtHours = h => h.toFixed(1)+'ש׳';
+const getProj = id => projects.find(p=>p.id===id)||{name:'לא ידוע',color:'#888',budget:null,rate:null,clientId:null};
+const getMember = uid => teamMembers.find(m=>m.uid===uid)||{name:'?',color:'#888'};
+const getClient = id => clients.find(c=>c.id===id)||{name:'לא ידוע',color:'#888'};
 const MONTHS=['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
 const DAYS=['א','ב','ג','ד','ה','ו','ש'];
 
-// ── BLOCKED DAYS ──────────────────────────────────────────────────────────────
-async function loadBlockedDays() {
-  const snap = await getDocs(collection(db,'blocked_days'));
-  blockedDays = [];
-  snap.forEach(d => blockedDays.push({id:d.id,...d.data()}));
+// ── CLIENTS ───────────────────────────────────────────────────────────────────
+async function loadClients() {
+  const snap = await getDocs(collection(db,'clients'));
+  clients = []; snap.forEach(d=>clients.push({id:d.id,...d.data()}));
+  renderClientSelects(); renderClientsSettings();
 }
 
-function isBlocked(dateStr, uid=null) {
-  return blockedDays.some(b =>
-    b.date === dateStr && (b.uid === null || b.uid === 'all' || b.uid === uid)
-  );
-}
-
-function getBlockedInfo(dateStr) {
-  return blockedDays.filter(b => b.date === dateStr);
-}
-
-window.addBlockedDay = async (dateStr) => {
-  const type = document.getElementById('block-type').value;
-  const reason = document.getElementById('block-reason').value.trim();
-  const uid = type === 'personal' ? document.getElementById('block-member').value : 'all';
-  if(!reason){showToast('הכנס סיבה');return;}
-  if(type==='personal'&&!uid){showToast('בחר עובד');return;}
-  await addDoc(collection(db,'blocked_days'),{date:dateStr,type,reason,uid,createdAt:Date.now()});
-  await loadBlockedDays();
-  closeModal();
-  renderCalendar();
-  showToast('יום חסום נוסף ✓');
-};
-
-window.removeBlockedDay = async (id) => {
-  await deleteDoc(doc(db,'blocked_days',id));
-  await loadBlockedDays();
-  renderCalendar();
-  showToast('הוסר');
-};
-
-// ── AVAILABILITY ──────────────────────────────────────────────────────────────
-async function loadAvailability() {
-  const snap = await getDocs(collection(db,'availability'));
-  availability = {};
-  snap.forEach(d => { availability[d.id] = d.data(); });
-}
-
-function getAvailHours(month, uid) {
-  return availability[month]?.[uid] || 0;
-}
-
-function getAvailHoursPerDay(month, uid) {
-  return availability[month]?.[`${uid}_hpd`] || 8;
-}
-
-window.saveAvailability = async (month) => {
-  const data = {};
-  teamMembers.forEach(m => {
-    const hEl = document.getElementById(`avail-${m.uid}`);
-    const hpdEl = document.getElementById(`hpd-${m.uid}`);
-    if(hEl) data[m.uid] = parseFloat(hEl.value)||0;
-    if(hpdEl) data[`${m.uid}_hpd`] = parseFloat(hpdEl.value)||8;
+function renderClientSelects() {
+  const opts = clients.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+  ['new-proj-client','filter-client'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.innerHTML='<option value="">'+( id==='new-proj-client'?'בחר לקוח...':'כל הלקוחות')+'</option>'+opts;
   });
-  await setDoc(doc(db,'availability',month), data);
-  availability[month] = data;
-  renderPlanning();
-  showToast('זמינות נשמרה ✓');
+}
+
+function renderClientsSettings() {
+  const el=document.getElementById('clients-list'); if(!el) return;
+  if(!clients.length){el.innerHTML='<div class="empty">אין לקוחות עדיין</div>';return;}
+  el.innerHTML=clients.map(c=>`
+    <div class="list-row">
+      <span class="dot" style="background:${c.color}"></span>
+      <span style="flex:1;font-weight:600">${c.name}</span>
+      ${c.contact?`<span style="color:var(--text2);font-size:13px">${c.contact}</span>`:''}
+      <button class="icon-btn" onclick="editClient('${c.id}')" style="color:var(--accent)">✏️</button>
+      <button class="icon-btn" onclick="deleteClient('${c.id}')">×</button>
+    </div>`).join('');
+}
+
+window.addClient = async () => {
+  const name=document.getElementById('new-client-name').value.trim(); if(!name) return;
+  const color=document.getElementById('new-client-color').value;
+  const contact=document.getElementById('new-client-contact').value.trim();
+  await addDoc(collection(db,'clients'),{name,color,contact,createdAt:Date.now()});
+  document.getElementById('new-client-name').value='';
+  document.getElementById('new-client-contact').value='';
+  await loadClients(); showToast('לקוח נוסף ✓');
+};
+
+window.editClient = id => {
+  const c=clients.find(x=>x.id===id); if(!c) return;
+  document.getElementById('edit-client-id').value=id;
+  document.getElementById('edit-client-name').value=c.name;
+  document.getElementById('edit-client-color').value=c.color||'#5b61e8';
+  document.getElementById('edit-client-contact').value=c.contact||'';
+  openModal('modal-edit-client');
+};
+window.saveEditClient = async () => {
+  const id=document.getElementById('edit-client-id').value;
+  const c=clients.find(x=>x.id===id); if(!c) return;
+  await setDoc(doc(db,'clients',id),{...c,
+    name:document.getElementById('edit-client-name').value.trim()||c.name,
+    color:document.getElementById('edit-client-color').value,
+    contact:document.getElementById('edit-client-contact').value.trim()
+  });
+  await loadClients(); closeModal(); showToast('לקוח עודכן ✓');
+};
+window.deleteClient = async id => {
+  if(!confirm('למחוק לקוח?')) return;
+  await deleteDoc(doc(db,'clients',id)); await loadClients();
 };
 
 // ── TEAM ──────────────────────────────────────────────────────────────────────
 async function loadTeam() {
-  const snap = await getDocs(collection(db,'team'));
-  teamMembers = [];
-  snap.forEach(d => teamMembers.push({uid:d.id,...d.data()}));
-  renderLoginNames();
-  renderTeamSettings();
+  const snap=await getDocs(collection(db,'team'));
+  teamMembers=[]; snap.forEach(d=>teamMembers.push({uid:d.id,...d.data()}));
+  renderLoginNames(); renderTeamSettings();
+  const bms=document.getElementById('block-member');
+  if(bms) bms.innerHTML='<option value="">בחר עובד...</option>'+teamMembers.map(m=>`<option value="${m.uid}">${m.name}</option>`).join('');
 }
 
 function renderLoginNames() {
-  const sel = document.getElementById('login-name');
-  if(!sel) return;
-  sel.innerHTML = '<option value="">בחר שם...</option>' +
-    teamMembers.map(m=>`<option value="${m.name}">${m.name}</option>`).join('');
+  const sel=document.getElementById('login-name'); if(!sel) return;
+  sel.innerHTML='<option value="">בחר שם...</option>'+teamMembers.map(m=>`<option value="${m.name}">${m.name}</option>`).join('');
 }
 
 window.addTeamMember = async () => {
@@ -140,54 +138,37 @@ window.addTeamMember = async () => {
   await addDoc(collection(db,'team'),{name,code,color,hpd,isAdmin,createdAt:Date.now()});
   document.getElementById('new-member-name').value='';
   document.getElementById('new-member-code').value='';
-  document.getElementById('new-member-hpd').value='';
-  document.getElementById('new-member-admin').checked=false;
-  await loadTeam();
-  showToast('עובד נוסף ✓');
+  await loadTeam(); showToast('עובד נוסף ✓');
 };
-
-window.deleteTeamMember = async (id) => {
-  if(!confirm('למחוק עובד זה?')) return;
-  await deleteDoc(doc(db,'team',id));
-  await loadTeam();
-  showToast('עובד נמחק');
+window.deleteTeamMember = async id => {
+  if(!confirm('למחוק עובד?')) return;
+  await deleteDoc(doc(db,'team',id)); await loadTeam();
 };
-
-window.editTeamMember = (id) => {
-  const m = teamMembers.find(x=>x.uid===id);
-  if(!m) return;
-  document.getElementById('edit-member-id').value = id;
-  document.getElementById('edit-member-name').value = m.name;
-  document.getElementById('edit-member-code').value = m.code;
-  document.getElementById('edit-member-color').value = m.color||'#6e76f5';
-  document.getElementById('edit-member-hpd').value = m.hpd||8;
-  document.getElementById('edit-member-admin').checked = m.isAdmin||false;
+window.editTeamMember = id => {
+  const m=teamMembers.find(x=>x.uid===id); if(!m) return;
+  document.getElementById('edit-member-id').value=id;
+  document.getElementById('edit-member-name').value=m.name;
+  document.getElementById('edit-member-code').value=m.code;
+  document.getElementById('edit-member-color').value=m.color||'#6e76f5';
+  document.getElementById('edit-member-hpd').value=m.hpd||8;
+  document.getElementById('edit-member-admin').checked=m.isAdmin||false;
   openModal('modal-edit-member');
 };
-
 window.saveEditMember = async () => {
-  const id = document.getElementById('edit-member-id').value;
-  const m = teamMembers.find(x=>x.uid===id);
-  if(!m) return;
-  const name = document.getElementById('edit-member-name').value.trim()||m.name;
-  const code = document.getElementById('edit-member-code').value.trim()||m.code;
-  const color = document.getElementById('edit-member-color').value;
-  const hpd = parseFloat(document.getElementById('edit-member-hpd').value)||8;
-  const isAdmin = document.getElementById('edit-member-admin').checked;
+  const id=document.getElementById('edit-member-id').value;
+  const m=teamMembers.find(x=>x.uid===id); if(!m) return;
+  const name=document.getElementById('edit-member-name').value.trim()||m.name;
+  const code=document.getElementById('edit-member-code').value.trim()||m.code;
+  const color=document.getElementById('edit-member-color').value;
+  const hpd=parseFloat(document.getElementById('edit-member-hpd').value)||8;
+  const isAdmin=document.getElementById('edit-member-admin').checked;
   await setDoc(doc(db,'team',id),{...m,name,code,color,hpd,isAdmin});
-  if(currentUser?.uid===id){
-    currentUser={...currentUser,name,isAdmin,color};
-    localStorage.setItem('wt_user',JSON.stringify(currentUser));
-    document.getElementById('user-name').textContent=name;
-  }
-  await loadTeam();
-  closeModal();
-  showToast('עובד עודכן ✓');
+  if(currentUser?.uid===id){currentUser={...currentUser,name,isAdmin,color};localStorage.setItem('wt_user',JSON.stringify(currentUser));document.getElementById('user-name').textContent=name;}
+  await loadTeam(); closeModal(); showToast('עובד עודכן ✓');
 };
 
 function renderTeamSettings() {
-  const el=document.getElementById('team-list');
-  if(!el) return;
+  const el=document.getElementById('team-list'); if(!el) return;
   if(!teamMembers.length){el.innerHTML='<div class="empty">אין עובדים עדיין</div>';return;}
   el.innerHTML=teamMembers.map(m=>`
     <div class="list-row">
@@ -199,49 +180,6 @@ function renderTeamSettings() {
       <button class="icon-btn" onclick="editTeamMember('${m.uid}')" style="color:var(--accent)">✏️</button>
       <button class="icon-btn" onclick="deleteTeamMember('${m.uid}')">×</button>
     </div>`).join('');
-}
-
-// ── LOGIN ─────────────────────────────────────────────────────────────────────
-window.doLogin = async () => {
-  const name=document.getElementById('login-name').value;
-  const code=document.getElementById('login-code').value;
-  if(!name||!code){showLoginError('בחר שם והזן קוד');return;}
-  const member=teamMembers.find(m=>m.name===name);
-  if(!member){showLoginError('שם לא נמצא');return;}
-  if(member.code!==code){showLoginError('קוד שגוי');return;}
-  currentUser={uid:member.uid,name:member.name,isAdmin:member.isAdmin||false,color:member.color||'#6e76f5'};
-  localStorage.setItem('wt_user',JSON.stringify(currentUser));
-  enterApp();
-};
-
-window.doLogout = () => {
-  currentUser=null; localStorage.removeItem('wt_user');
-  if(unsubEntries) unsubEntries();
-  document.getElementById('login-screen').style.display='flex';
-  document.getElementById('app-shell').style.display='none';
-};
-
-function showLoginError(msg){
-  const el=document.getElementById('login-error');
-  el.textContent=msg; el.style.display='block';
-}
-
-async function enterApp() {
-  document.getElementById('login-screen').style.display='none';
-  document.getElementById('app-shell').style.display='flex';
-  document.getElementById('user-name').textContent=currentUser.name;
-  if(currentUser.isAdmin) document.getElementById('admin-badge').style.display='inline-flex';
-  await loadProjects();
-  await loadBlockedDays();
-  await loadAvailability();
-  await loadPlanData();
-  subscribeEntries();
-  document.getElementById('r-date').value=todayStr();
-  document.getElementById('log-month-filter').value=thisMonth();
-  document.getElementById('exp-month').value=thisMonth();
-  document.getElementById('dash-month').value=thisMonth();
-  document.getElementById('plan-month').value=thisMonth();
-  showPage('dashboard');
 }
 
 // ── PROJECTS ──────────────────────────────────────────────────────────────────
@@ -260,62 +198,182 @@ function renderProjectSelects() {
 }
 
 function renderProjectsSettings() {
-  const el=document.getElementById('projects-list');
-  if(!el) return;
+  const el=document.getElementById('projects-list'); if(!el) return;
   if(!projects.length){el.innerHTML='<div class="empty">אין פרויקטים</div>';return;}
-  el.innerHTML=projects.map(p=>`
-    <div class="list-row">
-      <span class="dot" style="background:${p.color}"></span>
-      <span style="flex:1;font-weight:600">${p.name}</span>
-      ${p.budget?`<span style="color:var(--text2);font-size:13px">${p.budget}ש׳</span>`:''}
-      ${currentUser?.isAdmin&&p.rate?`<span class="badge-green">${fmtMoney(p.rate)}/ש׳</span>`:''}
-      <button class="icon-btn" onclick="editProject('${p.id}')" style="color:var(--accent)">✏️</button>
-      <button class="icon-btn" onclick="deleteProject('${p.id}')">×</button>
-    </div>`).join('');
+  const byClient={};
+  projects.forEach(p=>{
+    const cid=p.clientId||'none';
+    if(!byClient[cid]) byClient[cid]=[];
+    byClient[cid].push(p);
+  });
+  let html='';
+  Object.entries(byClient).forEach(([cid,projs])=>{
+    const c=cid==='none'?{name:'ללא לקוח',color:'#888'}:getClient(cid);
+    html+=`<div style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase">
+        <span class="dot" style="background:${c.color}"></span>${c.name}
+      </div>`;
+    projs.forEach(p=>{
+      html+=`<div class="list-row" style="padding-right:16px">
+        <span class="dot" style="background:${p.color}"></span>
+        <span style="flex:1;font-weight:500">${p.name}</span>
+        ${p.budget?`<span style="color:var(--text2);font-size:13px">${p.budget}ש׳</span>`:''}
+        ${currentUser?.isAdmin&&p.rate?`<span class="badge-green">${fmtMoney(p.rate)}/ש׳</span>`:''}
+        <button class="icon-btn" onclick="editProject('${p.id}')" style="color:var(--accent)">✏️</button>
+        <button class="icon-btn" onclick="deleteProject('${p.id}')">×</button>
+      </div>`;
+    });
+    html+='</div>';
+  });
+  el.innerHTML=html;
 }
 
 window.addProject = async () => {
-  const name=document.getElementById('new-proj-name').value.trim();
-  if(!name) return;
+  const name=document.getElementById('new-proj-name').value.trim(); if(!name) return;
   const color=document.getElementById('new-proj-color').value;
   const budget=parseFloat(document.getElementById('new-proj-budget').value)||null;
   const rate=parseFloat(document.getElementById('new-proj-rate').value)||null;
+  const clientId=document.getElementById('new-proj-client').value||null;
   const cadence=document.getElementById('new-proj-cadence').value;
-  await addDoc(collection(db,'projects'),{name,color,budget,rate,cadence,createdAt:Date.now()});
+  await addDoc(collection(db,'projects'),{name,color,budget,rate,clientId,cadence,createdAt:Date.now()});
   document.getElementById('new-proj-name').value='';
   document.getElementById('new-proj-budget').value='';
   document.getElementById('new-proj-rate').value='';
   await loadProjects(); showToast('פרויקט נוסף ✓');
 };
-
-window.deleteProject = async (id) => {
+window.deleteProject = async id => {
   if(!confirm('למחוק פרויקט?')) return;
   await deleteDoc(doc(db,'projects',id)); await loadProjects();
 };
-
-window.editProject = (id) => {
-  const p=projects.find(x=>x.id===id);
-  if(!p) return;
+window.editProject = id => {
+  const p=projects.find(x=>x.id===id); if(!p) return;
   document.getElementById('edit-proj-id').value=id;
   document.getElementById('edit-proj-name').value=p.name;
   document.getElementById('edit-proj-color').value=p.color||'#5b61e8';
   document.getElementById('edit-proj-budget').value=p.budget||'';
   document.getElementById('edit-proj-rate').value=p.rate||'';
+  const csel=document.getElementById('edit-proj-client');
+  if(csel){csel.innerHTML='<option value="">ללא לקוח</option>'+clients.map(c=>`<option value="${c.id}"${p.clientId===c.id?' selected':''} >${c.name}</option>`).join('');}
   openModal('modal-edit-proj');
 };
-
 window.saveEditProject = async () => {
   const id=document.getElementById('edit-proj-id').value;
   const p=projects.find(x=>x.id===id); if(!p) return;
-  const name=document.getElementById('edit-proj-name').value.trim()||p.name;
-  const color=document.getElementById('edit-proj-color').value;
-  const budget=document.getElementById('edit-proj-budget').value;
-  const rate=document.getElementById('edit-proj-rate').value;
-  await setDoc(doc(db,'projects',id),{...p,name,color,
-    budget:budget===''?null:parseFloat(budget)||null,
-    rate:rate===''?null:parseFloat(rate)||null});
+  await setDoc(doc(db,'projects',id),{...p,
+    name:document.getElementById('edit-proj-name').value.trim()||p.name,
+    color:document.getElementById('edit-proj-color').value,
+    budget:document.getElementById('edit-proj-budget').value===''?null:parseFloat(document.getElementById('edit-proj-budget').value)||null,
+    rate:document.getElementById('edit-proj-rate').value===''?null:parseFloat(document.getElementById('edit-proj-rate').value)||null,
+    clientId:document.getElementById('edit-proj-client').value||null
+  });
   await loadProjects(); closeModal(); showToast('פרויקט עודכן ✓');
 };
+
+// ── BLOCKED DAYS ──────────────────────────────────────────────────────────────
+async function loadBlockedDays() {
+  const snap=await getDocs(collection(db,'blocked_days'));
+  blockedDays=[]; snap.forEach(d=>blockedDays.push({id:d.id,...d.data()}));
+}
+
+function isBlocked(dateStr, uid=null) {
+  return blockedDays.some(b=>{
+    if(b.dateFrom && b.dateTo) return dateStr>=b.dateFrom && dateStr<=b.dateTo && (b.uid==='all'||b.uid===uid);
+    return b.date===dateStr && (b.uid==='all'||b.uid===uid);
+  });
+}
+
+function getBlockedInfo(dateStr) {
+  return blockedDays.filter(b=>{
+    if(b.dateFrom && b.dateTo) return dateStr>=b.dateFrom && dateStr<=b.dateTo;
+    return b.date===dateStr;
+  });
+}
+
+window.addBlockedDay = async () => {
+  const type=document.getElementById('block-type').value;
+  const reason=document.getElementById('block-reason').value.trim();
+  const uid=type==='personal'?document.getElementById('block-member').value:'all';
+  const useRange=document.getElementById('block-use-range').checked;
+  if(!reason){showToast('הכנס סיבה');return;}
+  if(type==='personal'&&!uid){showToast('בחר עובד');return;}
+  const baseDate=document.getElementById('block-date-val').value;
+  if(useRange){
+    const dateTo=document.getElementById('block-date-to').value;
+    if(!dateTo||dateTo<baseDate){showToast('תאריך סיום שגוי');return;}
+    await addDoc(collection(db,'blocked_days'),{dateFrom:baseDate,dateTo,type,reason,uid,createdAt:Date.now()});
+  } else {
+    await addDoc(collection(db,'blocked_days'),{date:baseDate,type,reason,uid,createdAt:Date.now()});
+  }
+  await loadBlockedDays();
+  closeModal(); renderCalendar(); showToast('יום חסום נוסף ✓');
+};
+
+window.removeBlockedDay = async id => {
+  await deleteDoc(doc(db,'blocked_days',id));
+  await loadBlockedDays(); renderCalendar(); showToast('הוסר');
+};
+
+// ── AVAILABILITY ──────────────────────────────────────────────────────────────
+async function loadAvailability() {
+  const snap=await getDocs(collection(db,'availability'));
+  availability={}; snap.forEach(d=>{availability[d.id]=d.data();});
+}
+
+function getAvailHours(month,uid){ return availability[month]?.[uid]||0; }
+function getHPD(month,uid){ return availability[month]?.[uid+'_hpd']||(getMember(uid).hpd||8); }
+
+function calcWorkDays(month, uid=null) {
+  const[y,m]=month.split('-').map(Number);
+  const total=new Date(y,m,0).getDate();
+  let count=0;
+  for(let d=1;d<=total;d++){
+    const ds=`${month}-${String(d).padStart(2,'0')}`;
+    const dow=new Date(y,m-1,d).getDay();
+    if(dow===5||dow===6) continue;
+    if(isBlocked(ds,'all')) continue;
+    if(uid&&isBlocked(ds,uid)) continue;
+    count++;
+  }
+  return count;
+}
+
+// ── LOGIN ─────────────────────────────────────────────────────────────────────
+window.doLogin = async () => {
+  const name=document.getElementById('login-name').value;
+  const code=document.getElementById('login-code').value;
+  if(!name||!code){showLoginError('בחר שם והזן קוד');return;}
+  const member=teamMembers.find(m=>m.name===name);
+  if(!member){showLoginError('שם לא נמצא');return;}
+  if(member.code!==code){showLoginError('קוד שגוי');return;}
+  currentUser={uid:member.uid,name:member.name,isAdmin:member.isAdmin||false,color:member.color||'#6e76f5'};
+  localStorage.setItem('wt_user',JSON.stringify(currentUser));
+  enterApp();
+};
+window.doLogout = () => {
+  currentUser=null; localStorage.removeItem('wt_user');
+  if(unsubEntries) unsubEntries();
+  document.getElementById('login-screen').style.display='flex';
+  document.getElementById('app-shell').style.display='none';
+};
+function showLoginError(msg){const el=document.getElementById('login-error');el.textContent=msg;el.style.display='block';}
+
+async function enterApp() {
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('app-shell').style.display='flex';
+  document.getElementById('user-name').textContent=currentUser.name;
+  if(currentUser.isAdmin) document.getElementById('admin-badge').style.display='inline-flex';
+  await loadClients();
+  await loadProjects();
+  await loadBlockedDays();
+  await loadAvailability();
+  await loadPlanData();
+  await loadTemplates();
+  subscribeEntries();
+  const m=thisMonth();
+  ['r-date'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=todayStr();});
+  ['log-month-filter','exp-month','dash-month','plan-month'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=m;});
+  showPage('dashboard');
+}
 
 // ── ENTRIES ───────────────────────────────────────────────────────────────────
 function subscribeEntries() {
@@ -325,16 +383,13 @@ function subscribeEntries() {
     : query(collection(db,'entries'),where('uid','==',currentUser.uid),orderBy('date','desc'));
   unsubEntries=onSnapshot(q,snap=>{
     entries=[]; snap.forEach(d=>entries.push({id:d.id,...d.data()}));
-    renderTodayEntries(); renderLog(); renderSummary(); renderDashboard(); renderReportAlerts();
+    renderTodayEntries(); renderLog(); renderSummaryAndDashboard(); renderReportAlerts();
   });
 }
 
 function checkOverlap(date,start,end,excludeId=null) {
   const s=timeToMins(start),e=timeToMins(end);
-  return entries.find(x=>
-    x.date===date&&x.uid===currentUser.uid&&x.id!==excludeId&&
-    x.startTime&&x.endTime&&timeToMins(x.startTime)<e&&timeToMins(x.endTime)>s
-  );
+  return entries.find(x=>x.date===date&&x.uid===currentUser.uid&&x.id!==excludeId&&x.startTime&&x.endTime&&timeToMins(x.startTime)<e&&timeToMins(x.endTime)>s);
 }
 
 window.addEntry = async () => {
@@ -344,23 +399,20 @@ window.addEntry = async () => {
   const endTime=document.getElementById('r-end').value;
   const note=document.getElementById('r-note').value.trim();
   if(!date||!projId||!startTime||!endTime){showToast('מלא את כל השדות');return;}
-
-  // check blocked
-  if(isBlocked(date, currentUser.uid)){
+  if(isBlocked(date,currentUser.uid)){
     const info=getBlockedInfo(date).find(b=>b.uid==='all'||b.uid===currentUser.uid);
-    showToast(`⛔ לא ניתן לדווח — ${info?.reason||'יום חסום'}`);
-    return;
+    showToast(`⛔ לא ניתן לדווח — ${info?.reason||'יום חסום'}`);return;
   }
-
-  const startM=timeToMins(startTime),endM=timeToMins(endTime);
-  if(endM<=startM){showToast('שעת סיום חייבת להיות אחרי שעת התחלה');return;}
+  const sM=timeToMins(startTime),eM=timeToMins(endTime);
+  if(eM<=sM){showToast('שעת סיום חייבת להיות אחרי שעת התחלה');return;}
   const overlap=checkOverlap(date,startTime,endTime);
   if(overlap){showToast(`⚠️ חפיפה עם: ${getProj(overlap.projId).name} (${overlap.startTime}–${overlap.endTime})`);return;}
-  const hours=(endM-startM)/60;
+  const hours=(eM-sM)/60;
   const p=getProj(projId);
   await addDoc(collection(db,'entries'),{
     date,projId,startTime,endTime,hours,note,
     uid:currentUser.uid,userName:currentUser.name,
+    clientId:p.clientId||null,
     value:p.rate?hours*p.rate:null,createdAt:Date.now()
   });
   document.getElementById('r-start').value='';
@@ -369,10 +421,48 @@ window.addEntry = async () => {
   document.getElementById('r-hours-display').textContent='';
   showToast('דיווח נשמר ✓');
 };
+window.deleteEntry = async id => { await deleteDoc(doc(db,'entries',id)); showToast('נמחק'); };
 
-window.deleteEntry = async (id) => {
-  await deleteDoc(doc(db,'entries',id)); showToast('נמחק');
+// ── TEMPLATES ─────────────────────────────────────────────────────────────────
+async function loadTemplates() {
+  const snap=await getDocs(query(collection(db,'templates'),where('uid','==',currentUser.uid)));
+  reportTemplates=[]; snap.forEach(d=>reportTemplates.push({id:d.id,...d.data()}));
+  renderTemplates();
+}
+function renderTemplates() {
+  const el=document.getElementById('templates-list'); if(!el) return;
+  if(!reportTemplates.length){el.innerHTML='<div class="empty" style="padding:8px 0">אין תבניות</div>';return;}
+  el.innerHTML=reportTemplates.map(t=>{
+    const p=getProj(t.projId);
+    return `<button onclick="applyTemplate('${t.id}')" style="display:flex;align-items:center;gap:8px;width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-xs);padding:8px 12px;margin-bottom:6px;cursor:pointer;text-align:right">
+      <span class="dot" style="background:${p.color}"></span>
+      <span style="flex:1;font-size:14px;font-weight:500">${t.name}</span>
+      <span style="font-size:12px;color:var(--text2)">${t.startTime}–${t.endTime}</span>
+      <button class="icon-btn" onclick="event.stopPropagation();deleteTemplate('${t.id}')" style="font-size:16px">×</button>
+    </button>`;
+  }).join('');
+}
+window.applyTemplate = id => {
+  const t=reportTemplates.find(x=>x.id===id); if(!t) return;
+  document.getElementById('r-proj').value=t.projId;
+  document.getElementById('r-start').value=t.startTime;
+  document.getElementById('r-end').value=t.endTime;
+  document.getElementById('r-note').value=t.note||'';
+  const mins=timeToMins(t.endTime)-timeToMins(t.startTime);
+  if(mins>0) document.getElementById('r-hours-display').textContent=`${(mins/60).toFixed(1)} שעות`;
+  showToast(`תבנית "${t.name}" הוחלה`);
 };
+window.saveTemplate = async () => {
+  const projId=document.getElementById('r-proj').value;
+  const startTime=document.getElementById('r-start').value;
+  const endTime=document.getElementById('r-end').value;
+  if(!projId||!startTime||!endTime){showToast('מלא פרויקט ושעות קודם');return;}
+  const name=prompt('שם לתבנית:');
+  if(!name) return;
+  await addDoc(collection(db,'templates'),{name,projId,startTime,endTime,note:document.getElementById('r-note').value.trim(),uid:currentUser.uid});
+  await loadTemplates(); showToast('תבנית נשמרה ✓');
+};
+window.deleteTemplate = async id => { await deleteDoc(doc(db,'templates',id)); await loadTemplates(); };
 
 // ── TODAY ─────────────────────────────────────────────────────────────────────
 function renderTodayEntries() {
@@ -382,18 +472,18 @@ function renderTodayEntries() {
   if(!list.length){el.innerHTML='<div class="empty">אין דיווחים להיום</div>';document.getElementById('today-total').textContent='';return;}
   const total=list.reduce((a,e)=>a+e.hours,0);
   const totalV=list.reduce((a,e)=>a+(e.value||0),0);
-  document.getElementById('today-total').textContent=`${total.toFixed(1)} ש׳${currentUser?.isAdmin&&totalV?' · '+fmtMoney(totalV):''}`;
-  el.innerHTML=[...list].sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')).map(e=>{
+  document.getElementById('today-total').textContent=`${fmtHours(total)}${currentUser?.isAdmin&&totalV?' · '+fmtMoney(totalV):''}`;
+  el.innerHTML=[...list].sort((a,b)=>(a.startTime||0)-(b.startTime||0)).map(e=>{
     const p=getProj(e.projId);
     const canDel=currentUser?.isAdmin||e.uid===currentUser?.uid;
     return `<div class="list-row">
       <span class="dot" style="background:${p.color}"></span>
       <span style="flex:1;font-weight:500">${p.name}</span>
       ${currentUser?.isAdmin?`<span class="tag" style="background:${getMember(e.uid).color}22;color:${getMember(e.uid).color}">${e.userName||''}</span>`:''}
-      <span style="color:var(--text2);font-size:13px">${e.startTime||''}–${e.endTime||''}</span>
-      ${e.note?`<span style="color:var(--text3);font-size:13px">${e.note}</span>`:''}
+      <span style="color:var(--text2);font-size:13px">${e.startTime||''}-${e.endTime||''}</span>
+      ${e.note?`<span style="color:var(--text3);font-size:12px">${e.note}</span>`:''}
       ${currentUser?.isAdmin&&e.value?`<span class="badge-green">${fmtMoney(e.value)}</span>`:''}
-      <span style="font-weight:700">${e.hours.toFixed(1)}ש׳</span>
+      <span style="font-weight:700">${fmtHours(e.hours)}</span>
       ${canDel?`<button class="icon-btn" onclick="deleteEntry('${e.id}')">×</button>`:''}
     </div>`;
   }).join('');
@@ -403,17 +493,14 @@ function renderReportAlerts() {
   const el=document.getElementById('report-alerts'); if(!el) return;
   const td=todayStr();
   const blockInfo=getBlockedInfo(td).find(b=>b.uid==='all'||b.uid===currentUser?.uid);
-  if(blockInfo){
-    el.innerHTML=`<div class="alert alert-danger">⛔ היום חסום לדיווח — ${blockInfo.reason}</div>`;
-    return;
-  }
+  if(blockInfo){el.innerHTML=`<div class="alert alert-danger">⛔ היום חסום לדיווח — ${blockInfo.reason}</div>`;return;}
   const mm=thisMonth(); const alerts=[];
   projects.forEach(p=>{
     if(!p.budget) return;
     const used=entries.filter(e=>e.projId===p.id&&e.date.startsWith(mm)&&(currentUser?.isAdmin||e.uid===currentUser?.uid)).reduce((a,e)=>a+e.hours,0);
     const pct=used/p.budget;
-    if(pct>=1) alerts.push({type:'danger',msg:`${p.name}: חרגת מהתקציב! ${used.toFixed(1)}/${p.budget} ש׳`});
-    else if(pct>=0.8) alerts.push({type:'warn',msg:`${p.name}: קרוב לתקציב — ${used.toFixed(1)}/${p.budget} ש׳ (${Math.round(pct*100)}%)`});
+    if(pct>=1) alerts.push({type:'danger',msg:`${p.name}: חרגת מהתקציב! ${fmtHours(used)}/${p.budget} ש׳`});
+    else if(pct>=0.8) alerts.push({type:'warn',msg:`${p.name}: קרוב לתקציב — ${fmtHours(used)}/${p.budget} ש׳ (${Math.round(pct*100)}%)`});
   });
   el.innerHTML=alerts.map(a=>`<div class="alert alert-${a.type}">⚠ ${a.msg}</div>`).join('');
 }
@@ -442,20 +529,20 @@ function renderLog() {
         <span style="font-weight:700">${d}/${m}/${y}</span>
         <div style="display:flex;gap:6px;align-items:center">
           ${blocks.filter(b=>b.uid==='all').map(b=>`<span class="badge-holiday">${b.reason}</span>`).join('')}
-          ${blocks.filter(b=>b.uid!=='all').map(b=>{const mb=getMember(b.uid);return`<span class="badge-personal" style="background:${mb.color}22;color:${mb.color}">${b.reason}</span>`;}).join('')}
-          <span style="color:var(--text2)">${tot.toFixed(1)}ש׳${currentUser?.isAdmin&&totV?' · '+fmtMoney(totV):''}</span>
+          ${blocks.filter(b=>b.uid!=='all').map(b=>{const mb=getMember(b.uid);return`<span style="background:${mb.color}22;color:${mb.color};font-size:12px;font-weight:600;padding:2px 8px;border-radius:20px">${b.reason}</span>`;}).join('')}
+          <span style="color:var(--text2)">${fmtHours(tot)}${currentUser?.isAdmin&&totV?' · '+fmtMoney(totV):''}</span>
         </div>
       </div>
-      ${[...dl].sort((a,b)=>(a.startTime||'').localeCompare(b.startTime||'')).map(e=>{
+      ${[...dl].sort((a,b)=>(a.startTime||0)-(b.startTime||0)).map(e=>{
         const p=getProj(e.projId);
         const canDel=currentUser?.isAdmin||e.uid===currentUser?.uid;
         return`<div class="list-row">
           <span class="dot" style="background:${p.color}"></span>
           <span style="flex:1">${p.name}</span>
           ${currentUser?.isAdmin?`<span class="tag" style="background:${getMember(e.uid).color}22;color:${getMember(e.uid).color}">${e.userName||''}</span>`:''}
-          <span style="color:var(--text2);font-size:13px">${e.startTime||''}–${e.endTime||''}</span>
-          ${e.note?`<span style="color:var(--text3);font-size:13px">${e.note}</span>`:''}
-          <span style="font-weight:700">${e.hours.toFixed(1)}ש׳</span>
+          <span style="color:var(--text2);font-size:13px">${e.startTime||''}-${e.endTime||''}</span>
+          ${e.note?`<span style="color:var(--text3);font-size:12px">${e.note}</span>`:''}
+          <span style="font-weight:700">${fmtHours(e.hours)}</span>
           ${canDel?`<button class="icon-btn" onclick="deleteEntry('${e.id}')">×</button>`:''}
         </div>`;
       }).join('')}
@@ -470,7 +557,7 @@ window.nextMonth=()=>{const[y,m]=calMonth.split('-').map(Number);const d=new Dat
 
 function renderCalendar() {
   const[y,m]=calMonth.split('-').map(Number);
-  document.getElementById('cal-month-label').textContent=`${MONTHS[m-1]} ${y}`;
+  const lbl=document.getElementById('cal-month-label'); if(lbl) lbl.textContent=`${MONTHS[m-1]} ${y}`;
   const firstDow=new Date(y,m-1,1).getDay();
   const totalDays=new Date(y,m,0).getDate();
   const today=todayStr();
@@ -484,218 +571,261 @@ function renderCalendar() {
     const dow=new Date(y,m-1,d).getDay();
     const isWknd=dow===5||dow===6;
     const blocks=getBlockedInfo(ds);
-    const holidays=blocks.filter(b=>b.uid==='all'||b.uid==='global');
-    const personal=blocks.filter(b=>b.uid!=='all'&&b.uid!=='global');
-    let bgStyle='';
-    if(holidays.length) bgStyle='background:#fff3cd;border-color:#ffc107;';
-    const dots=[...new Set(de.map(e=>e.projId))].slice(0,3).map(id=>{
-      const p=getProj(id);return`<span style="width:7px;height:7px;border-radius:50%;background:${p.color};display:inline-block;margin:0 1px"></span>`;
-    }).join('');
-    const personalDots=personal.map(b=>{
-      const mb=getMember(b.uid);
-      return`<span style="width:16px;height:16px;border-radius:50%;background:${mb.color};display:inline-flex;align-items:center;justify-content:center;font-size:9px;color:#fff;font-weight:700;flex-shrink:0" title="${mb.name}: ${b.reason}">✕</span>`;
-    }).join('');
-    html+=`<div class="cal-cell${isToday?' cal-today':''}${isWknd?' cal-wknd':''}" 
-      style="${bgStyle}" onclick="openBlockedDayModal('${ds}')">
+    const holidays=blocks.filter(b=>b.uid==='all');
+    const personal=blocks.filter(b=>b.uid!=='all');
+    let bgStyle=''; if(holidays.length) bgStyle='background:#fff3cd;border-color:#ffc107;';
+    const dots=[...new Set(de.map(e=>e.projId))].slice(0,3).map(id=>{const p=getProj(id);return`<span style="width:6px;height:6px;border-radius:50%;background:${p.color};display:inline-block;margin:0 1px"></span>`;}).join('');
+    const personalDots=personal.map(b=>{const mb=getMember(b.uid);return`<span title="${mb.name}: ${b.reason}" style="width:15px;height:15px;border-radius:50%;background:${mb.color};display:inline-flex;align-items:center;justify-content:center;font-size:8px;color:#fff;flex-shrink:0">✕</span>`;}).join('');
+    html+=`<div class="cal-cell${isToday?' cal-today':''}${isWknd?' cal-wknd':''}" style="${bgStyle}" onclick="${currentUser?.isAdmin?`openDayModal('${ds}')`:tot?`openDayModal('${ds}')`:''} ">
       <div class="cal-num">${d}</div>
-      ${holidays.map(h=>`<div style="font-size:9px;font-weight:600;color:#856404;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h.reason}</div>`).join('')}
-      ${tot?`<div style="font-size:10px;font-weight:700;color:var(--accent)">${tot.toFixed(1)}ש׳</div>`:''}
-      <div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px">${dots}${personalDots}</div>
+      ${holidays.slice(0,1).map(h=>`<div style="font-size:9px;font-weight:600;color:#856404;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h.reason}</div>`).join('')}
+      ${tot?`<div style="font-size:10px;font-weight:700;color:var(--accent)">${fmtHours(tot)}</div>`:''}
+      <div style="display:flex;flex-wrap:wrap;gap:1px;margin-top:2px">${dots}${personalDots}</div>
     </div>`;
   }
-  document.getElementById('cal-grid').innerHTML=html;
-
-  // legend
-  const legendEl=document.getElementById('cal-legend');
-  if(legendEl){
-    legendEl.innerHTML=projects.filter(p=>p.budget).map(p=>`
-      <span style="display:flex;align-items:center;gap:5px;font-size:12px">
-        <span style="width:8px;height:8px;border-radius:50%;background:${p.color};display:inline-block"></span>${p.name}
-      </span>`).join('');
-  }
+  const grid=document.getElementById('cal-grid'); if(grid) grid.innerHTML=html;
 }
 
-window.openBlockedDayModal = (dateStr) => {
-  if(!currentUser?.isAdmin) return;
-  document.getElementById('block-date-label').textContent = dateStr.split('-').reverse().join('/');
-  document.getElementById('block-date-val').value = dateStr;
-  document.getElementById('block-reason').value = '';
-  document.getElementById('block-type').value = 'holiday';
+window.openDayModal = dateStr => {
+  const[y,m,d]=dateStr.split('-');
+  document.getElementById('day-modal-title').textContent=`${d}/${m}/${y}`;
+  document.getElementById('block-date-val').value=dateStr;
+  document.getElementById('block-date-to').value=dateStr;
+  document.getElementById('block-reason').value='';
+  document.getElementById('block-type').value='holiday';
   document.getElementById('block-member-row').style.display='none';
-
+  document.getElementById('block-range-row').style.display='none';
+  document.getElementById('block-use-range').checked=false;
+  // existing blocks
   const existing=getBlockedInfo(dateStr);
   const existEl=document.getElementById('existing-blocks');
   existEl.innerHTML=existing.length?existing.map(b=>{
     const mb=b.uid==='all'?null:getMember(b.uid);
     return`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:0.5px solid var(--border)">
-      ${mb?`<span style="width:20px;height:20px;border-radius:50%;background:${mb.color};display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:#fff;flex-shrink:0">${mb.name[0]}</span>`:'<span style="font-size:16px">🔴</span>'}
+      ${mb?`<span style="width:20px;height:20px;border-radius:50%;background:${mb.color};display:inline-flex;align-items:center;justify-content:center;font-size:9px;color:#fff">${mb.name[0]}</span>`:`<span>🔴</span>`}
       <span style="flex:1;font-size:14px">${b.reason}${mb?' — '+mb.name:' (כולם)'}</span>
       <button class="icon-btn" onclick="removeBlockedDay('${b.id}')">×</button>
     </div>`;
-  }).join(''):'<div style="color:var(--text3);font-size:13px;padding:8px 0">אין חסימות ביום זה</div>';
-
-  openModal('modal-blocked-day');
+  }).join(''):'<div style="color:var(--text3);font-size:13px;padding:6px 0">אין חסימות</div>';
+  // day entries
+  const dayEntries=entries.filter(e=>e.date===dateStr&&(currentUser?.isAdmin||e.uid===currentUser?.uid));
+  const dayEntriesEl=document.getElementById('day-entries');
+  if(dayEntries.length){
+    const tot=dayEntries.reduce((a,e)=>a+e.hours,0);
+    const totV=dayEntries.reduce((a,e)=>a+(e.value||0),0);
+    dayEntriesEl.innerHTML=`<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+      <div style="font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">דיווחים ביום זה</div>
+      ${[...dayEntries].sort((a,b)=>(a.startTime||0)-(b.startTime||0)).map(e=>{
+        const p=getProj(e.projId);
+        return`<div class="list-row">
+          <span class="dot" style="background:${p.color}"></span>
+          <span style="flex:1;font-size:14px">${p.name}</span>
+          ${currentUser?.isAdmin?`<span style="font-size:12px;color:${getMember(e.uid).color}">${e.userName}</span>`:''}
+          <span style="color:var(--text2);font-size:13px">${e.startTime}-${e.endTime}</span>
+          <span style="font-weight:700">${fmtHours(e.hours)}</span>
+        </div>`;
+      }).join('')}
+      <div style="text-align:left;font-weight:700;font-size:14px;padding-top:6px;color:var(--accent)">סה"כ: ${fmtHours(tot)}${currentUser?.isAdmin&&totV?' · '+fmtMoney(totV):''}</div>
+    </div>`;
+  } else dayEntriesEl.innerHTML='';
+  openModal('modal-day');
 };
 
-// ── SUMMARY ───────────────────────────────────────────────────────────────────
-let sumPeriod='month';
-window.setSumPeriod=(p,btn)=>{sumPeriod=p;document.querySelectorAll('.sum-tab').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderSummary();};
+// ── SUMMARY + DASHBOARD (unified) ────────────────────────────────────────────
+function renderSummaryAndDashboard() {
+  renderDashboard(); renderSummary();
+}
 
-function renderSummary() {
+function getFilteredEntries(period, month) {
   let f=entries.filter(e=>currentUser?.isAdmin||e.uid===currentUser?.uid);
-  if(sumPeriod==='month') f=f.filter(e=>e.date.startsWith(thisMonth()));
-  else if(sumPeriod==='week'){
+  if(period==='month') f=f.filter(e=>e.date.startsWith(month));
+  else if(period==='week'){
     const now=new Date(),mon=new Date(now);mon.setDate(now.getDate()-((now.getDay()+6)%7));
     f=f.filter(e=>e.date>=mon.toISOString().slice(0,10)&&e.date<=todayStr());
   }
-  const totalH=f.reduce((a,e)=>a+e.hours,0);
-  const totalV=f.reduce((a,e)=>a+(e.value||0),0);
-  const days=[...new Set(f.map(e=>e.date))].length;
-  const avgDay=days?totalH/days:0;
-  const metricsEl=document.getElementById('sum-metrics');
-  if(!metricsEl) return;
-  metricsEl.innerHTML=`
-    <div class="metric-card"><div class="metric-val">${totalH.toFixed(1)}</div><div class="metric-lbl">שעות</div></div>
-    ${currentUser?.isAdmin?`<div class="metric-card"><div class="metric-val" style="font-size:18px">${fmtMoney(totalV)}</div><div class="metric-lbl">שווי</div></div>`:''}
-    <div class="metric-card"><div class="metric-val">${days}</div><div class="metric-lbl">ימים</div></div>
-    <div class="metric-card"><div class="metric-val">${avgDay.toFixed(1)}</div><div class="metric-lbl">ממוצע/יום</div></div>`;
-  const byProj={};
-  f.forEach(e=>{if(!byProj[e.projId])byProj[e.projId]={h:0,v:0};byProj[e.projId].h+=e.hours;byProj[e.projId].v+=e.value||0;});
-  const bdEl=document.getElementById('sum-breakdown');
-  if(!bdEl) return;
-  const sorted=Object.entries(byProj).sort((a,b)=>b[1].h-a[1].h);
-  if(!sorted.length){bdEl.innerHTML='<div class="empty">אין נתונים</div>';return;}
-  bdEl.innerHTML=sorted.map(([id,{h,v}])=>{
-    const p=getProj(id);
-    const bpct=(sumPeriod==='month'&&p.budget)?Math.min(Math.round(h/p.budget*100),100):totalH?Math.round(h/totalH*100):0;
-    const barColor=(sumPeriod==='month'&&p.budget&&h/p.budget>=1)?'#ef4444':(sumPeriod==='month'&&p.budget&&h/p.budget>=0.8)?'#f59e0b':p.color;
-    return`<div style="margin-bottom:14px">
-      <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-        <span style="display:flex;align-items:center;gap:6px;font-weight:600"><span class="dot" style="background:${p.color}"></span>${p.name}</span>
-        <span style="color:var(--text2)">${h.toFixed(1)}ש׳${currentUser?.isAdmin&&v?' · '+fmtMoney(v):''}</span>
-      </div>
-      <div class="bar-wrap"><div class="bar-fill" style="width:${bpct}%;background:${barColor}"></div></div>
-      ${sumPeriod==='month'&&p.budget?`<div style="font-size:12px;color:var(--text2);margin-top:3px">${h.toFixed(1)}/${p.budget} ש׳ · ${Math.round(h/p.budget*100)}%</div>`:''}
-    </div>`;
-  }).join('');
-  const perUserEl=document.getElementById('sum-per-user');
-  if(!perUserEl) return;
-  if(currentUser?.isAdmin){
-    const byU={};
-    f.forEach(e=>{if(!byU[e.uid])byU[e.uid]={h:0,v:0,name:e.userName||e.uid};byU[e.uid].h+=e.hours;byU[e.uid].v+=e.value||0;});
-    const us=Object.values(byU).sort((a,b)=>b.h-a.h);
-    perUserEl.innerHTML=`<div class="card mb-sm"><div class="section-title">לפי עובד</div>
-      ${us.map(u=>`<div class="list-row"><span style="flex:1;font-weight:600">${u.name}</span>
-        <span style="color:var(--text2)">${u.h.toFixed(1)}ש׳</span>
-        ${u.v?`<span class="badge-green">${fmtMoney(u.v)}</span>`:''}
-      </div>`).join('')}</div>`;
-  } else perUserEl.innerHTML='';
+  return f;
 }
 
-// ── DASHBOARD ─────────────────────────────────────────────────────────────────
+// DASHBOARD
 function renderDashboard() {
   const el=document.getElementById('dash-content'); if(!el) return;
   const month=document.getElementById('dash-month')?.value||thisMonth();
   const[y,m]=month.split('-').map(Number);
-  const monthEntries=entries.filter(e=>e.date.startsWith(month)&&(currentUser?.isAdmin||e.uid===currentUser?.uid));
+  const f=entries.filter(e=>e.date.startsWith(month)&&(currentUser?.isAdmin||e.uid===currentUser?.uid));
   const totalBudget=projects.reduce((a,p)=>a+(p.budget||0),0);
-  const totalUsed=monthEntries.reduce((a,e)=>a+e.hours,0);
-  const totalValue=monthEntries.reduce((a,e)=>a+(e.value||0),0);
+  const totalUsed=f.reduce((a,e)=>a+e.hours,0);
+  const totalValue=f.reduce((a,e)=>a+(e.value||0),0);
   const pctUsed=totalBudget?Math.min(Math.round(totalUsed/totalBudget*100),100):0;
-  const today=new Date();
   const daysInMonth=new Date(y,m,0).getDate();
-  const dayOfMonth=month===thisMonth()?today.getDate():daysInMonth;
+  const dayOfMonth=month===thisMonth()?new Date().getDate():daysInMonth;
   const pctMonth=Math.round(dayOfMonth/daysInMonth*100);
-  let paceColor='#16a34a',paceText='בקצב טוב 🟢';
+  const expected=totalBudget*(pctMonth/100);
+  const burnRate=expected>0?(totalUsed/expected):0;
+  let paceColor='#16a34a',paceText='בקצב טוב 🟢',paceDetail='';
   if(totalBudget>0){
-    const expected=totalBudget*(pctMonth/100);
-    const ratio=totalUsed/expected;
-    if(ratio<0.7){paceColor='#dc2626';paceText='מפגר מאוד 🔴';}
-    else if(ratio<0.85){paceColor='#d97706';paceText='קצת מפגר 🟡';}
-    else if(totalUsed>totalBudget){paceColor='#dc2626';paceText='חריגה מהתקציב 🔴';}
+    if(totalUsed>totalBudget){paceColor='#dc2626';paceText='חריגה 🔴';}
+    else if(burnRate<0.7){paceColor='#dc2626';paceText='מפגר מאוד 🔴';paceDetail=`צפי סוף חודש: ${Math.round(totalUsed/(pctMonth/100))} ש׳`;}
+    else if(burnRate<0.85){paceColor='#d97706';paceText='קצת מפגר 🟡';paceDetail=`צפי סוף חודש: ${Math.round(totalUsed/(pctMonth/100))} ש׳`;}
+    else{paceDetail=`צפי סוף חודש: ${Math.round(totalUsed/(pctMonth/100))} ש׳`;}
   }
+  // by client
+  const byClient={};
+  f.forEach(e=>{
+    const p=getProj(e.projId); const cid=p.clientId||'none';
+    if(!byClient[cid])byClient[cid]={hours:0,value:0};
+    byClient[cid].hours+=e.hours; byClient[cid].value+=e.value||0;
+  });
+  // by project
   const byProj={};
   projects.forEach(p=>{byProj[p.id]={proj:p,used:0,value:0};});
-  monthEntries.forEach(e=>{if(byProj[e.projId]){byProj[e.projId].used+=e.hours;byProj[e.projId].value+=e.value||0;}});
+  f.forEach(e=>{if(byProj[e.projId]){byProj[e.projId].used+=e.hours;byProj[e.projId].value+=e.value||0;}});
+  // by member
   const byMember={};
-  monthEntries.forEach(e=>{
-    if(!byMember[e.uid])byMember[e.uid]={name:e.userName||e.uid,uid:e.uid,hours:0,value:0};
-    byMember[e.uid].hours+=e.hours;byMember[e.uid].value+=e.value||0;
-  });
+  f.forEach(e=>{if(!byMember[e.uid])byMember[e.uid]={name:e.userName||e.uid,uid:e.uid,hours:0,value:0};byMember[e.uid].hours+=e.hours;byMember[e.uid].value+=e.value||0;});
+  // not reported today (admin)
+  const td=todayStr();
+  const reportedToday=new Set(entries.filter(e=>e.date===td).map(e=>e.uid));
+  const notReported=teamMembers.filter(m=>!reportedToday.has(m.uid)&&!isBlocked(td,m.uid));
+
   el.innerHTML=`
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:14px">
-      <div class="dash-metric"><div class="dash-metric-val">${totalUsed.toFixed(1)}<span style="font-size:13px;font-weight:400"> ש׳</span></div><div class="dash-metric-lbl">מתוך ${totalBudget} ש׳</div><div class="dash-metric-sub" style="color:${paceColor}">${paceText}</div></div>
-      ${currentUser?.isAdmin?`<div class="dash-metric"><div class="dash-metric-val" style="font-size:19px">${fmtMoney(totalValue)}</div><div class="dash-metric-lbl">שווי כולל</div><div class="dash-metric-sub">${MONTHS[m-1]} ${y}</div></div>`:''}
-      <div class="dash-metric"><div class="dash-metric-val">${pctUsed}%</div><div class="dash-metric-lbl">מהתקציב</div><div class="dash-metric-sub">${pctMonth}% מהחודש עבר</div></div>
+      <div class="dash-metric"><div class="dash-metric-val">${totalUsed.toFixed(1)}<span style="font-size:12px;font-weight:400"> ש׳</span></div><div class="dash-metric-lbl">מתוך ${totalBudget} ש׳</div><div class="dash-metric-sub" style="color:${paceColor}">${paceText}</div></div>
+      ${currentUser?.isAdmin?`<div class="dash-metric"><div class="dash-metric-val" style="font-size:18px">${fmtMoney(totalValue)}</div><div class="dash-metric-lbl">שווי חויב</div><div class="dash-metric-sub">${MONTHS[m-1]} ${y}</div></div>`:''}
+      <div class="dash-metric"><div class="dash-metric-val">${pctUsed}%</div><div class="dash-metric-lbl">מהתקציב</div><div class="dash-metric-sub">${pctMonth}% מהחודש</div></div>
+      ${paceDetail?`<div class="dash-metric"><div class="dash-metric-val" style="font-size:16px">${Math.round(totalUsed/(pctMonth/100)||0)}</div><div class="dash-metric-lbl">צפי סוף חודש</div><div class="dash-metric-sub">שעות</div></div>`:''}
     </div>
+    ${currentUser?.isAdmin&&notReported.length?`<div class="alert alert-warn" style="margin-bottom:12px">⚠ לא דיווחו היום: ${notReported.map(m=>m.name).join(', ')}</div>`:''}
     <div class="card mb-sm">
-      <div class="section-title">תקציב מול ביצוע</div>
+      <div class="section-title">תקציב מול ביצוע — לפי פרויקט</div>
       ${Object.values(byProj).filter(x=>x.proj.budget).map(({proj:p,used,value})=>{
         const pct=p.budget?Math.min(Math.round(used/p.budget*100),100):0;
         const barColor=used/p.budget>=1?'#ef4444':used/p.budget>=0.8?'#f59e0b':p.color;
+        const c=getClient(p.clientId);
         return`<div style="margin-bottom:14px">
           <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-            <span style="display:flex;align-items:center;gap:6px;font-weight:600"><span class="dot" style="background:${p.color}"></span>${p.name}</span>
-            <span style="color:var(--text2);font-size:14px">${used.toFixed(1)}/${p.budget} ש׳ · <span style="font-weight:700;color:${barColor}">${Math.round(used/p.budget*100)}%</span></span>
+            <span style="display:flex;align-items:center;gap:6px;font-weight:600">
+              <span class="dot" style="background:${p.color}"></span>${p.name}
+              <span style="font-size:11px;color:var(--text3)">${p.clientId?c.name:''}</span>
+            </span>
+            <span style="color:var(--text2);font-size:14px">${fmtHours(used)}/${p.budget} · <span style="font-weight:700;color:${barColor}">${Math.round(used/p.budget*100)}%</span></span>
           </div>
-          <div class="bar-wrap" style="height:10px"><div class="bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
-          ${currentUser?.isAdmin&&value?`<div style="font-size:12px;color:var(--text2);margin-top:3px">שווי: ${fmtMoney(value)}</div>`:''}
+          <div class="bar-wrap" style="height:9px"><div class="bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+          ${currentUser?.isAdmin&&value?`<div style="font-size:12px;color:var(--text2);margin-top:2px">שווי: ${fmtMoney(value)}</div>`:''}
         </div>`;
       }).join('')}
       ${!Object.values(byProj).some(x=>x.proj.budget)?'<div class="empty">הגדר תקציב לפרויקטים בהגדרות</div>':''}
     </div>
-    ${currentUser?.isAdmin?`<div class="card mb-sm"><div class="section-title">ריכוז לפי עובד — ${MONTHS[m-1]}</div>
-      ${Object.values(byMember).length?Object.values(byMember).sort((a,b)=>b.hours-a.hours).map(u=>{
-        const mb=getMember(u.uid);
+    ${currentUser?.isAdmin&&Object.keys(byClient).length?`<div class="card mb-sm">
+      <div class="section-title">ריכוז לפי לקוח</div>
+      ${Object.entries(byClient).sort((a,b)=>b[1].hours-a[1].hours).map(([cid,{hours,value}])=>{
+        const c=cid==='none'?{name:'ללא לקוח',color:'#888'}:getClient(cid);
         return`<div class="list-row">
-          <span class="dot" style="background:${mb.color}"></span>
-          <span style="flex:1;font-weight:600">${u.name}</span>
-          <span style="color:var(--text2)">${u.hours.toFixed(1)} ש׳</span>
-          <span class="badge-green">${fmtMoney(u.value)}</span>
+          <span class="dot" style="background:${c.color}"></span>
+          <span style="flex:1;font-weight:600">${c.name}</span>
+          <span style="color:var(--text2)">${fmtHours(hours)}</span>
+          ${value?`<span class="badge-green">${fmtMoney(value)}</span>`:''}
         </div>`;
-      }).join(''):'<div class="empty">אין דיווחים לחודש זה</div>'}
+      }).join('')}
+    </div>`:''}
+    ${currentUser?.isAdmin&&Object.keys(byMember).length?`<div class="card">
+      <div class="section-title">עומס צוות — ${MONTHS[m-1]}</div>
+      ${Object.values(byMember).sort((a,b)=>b.hours-a.hours).map(u=>{
+        const mb=getMember(u.uid);
+        const avail=getAvailHours(month,u.uid);
+        const pct=avail?Math.round(u.hours/avail*100):0;
+        const barColor=pct>=100?'#ef4444':pct>=80?'#f59e0b':'#16a34a';
+        return`<div style="margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span style="display:flex;align-items:center;gap:7px">
+              <div style="width:24px;height:24px;border-radius:50%;background:${mb.color};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff">${mb.name[0]}</div>
+              <span style="font-weight:600">${u.name}</span>
+            </span>
+            <span style="color:var(--text2)">${fmtHours(u.hours)}${avail?'/'+avail+'ש׳ ('+pct+'%)':''} ${u.value?'· '+fmtMoney(u.value):''}</span>
+          </div>
+          ${avail?`<div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(pct,100)}%;background:${barColor}"></div></div>`:''}
+        </div>`;
+      }).join('')}
     </div>`:''}`;
 }
 window.onDashMonthChange=()=>renderDashboard();
+
+// SUMMARY
+let sumPeriod='month';
+window.setSumPeriod=(p,btn)=>{sumPeriod=p;document.querySelectorAll('.sum-tab').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderSummary();};
+
+function renderSummary() {
+  const month=document.getElementById('dash-month')?.value||thisMonth();
+  const f=getFilteredEntries(sumPeriod,month);
+  const totalH=f.reduce((a,e)=>a+e.hours,0);
+  const totalV=f.reduce((a,e)=>a+(e.value||0),0);
+  const days=[...new Set(f.map(e=>e.date))].length;
+  const metricsEl=document.getElementById('sum-metrics'); if(!metricsEl) return;
+  metricsEl.innerHTML=`
+    <div class="metric-card"><div class="metric-val">${totalH.toFixed(1)}</div><div class="metric-lbl">שעות</div></div>
+    ${currentUser?.isAdmin?`<div class="metric-card"><div class="metric-val" style="font-size:17px">${fmtMoney(totalV)}</div><div class="metric-lbl">שווי</div></div>`:''}
+    <div class="metric-card"><div class="metric-val">${days}</div><div class="metric-lbl">ימים</div></div>
+    <div class="metric-card"><div class="metric-val">${days?(totalH/days).toFixed(1):0}</div><div class="metric-lbl">ממוצע/יום</div></div>`;
+  const byProj={};
+  f.forEach(e=>{if(!byProj[e.projId])byProj[e.projId]={h:0,v:0};byProj[e.projId].h+=e.hours;byProj[e.projId].v+=e.value||0;});
+  const bdEl=document.getElementById('sum-breakdown'); if(!bdEl) return;
+  const sorted=Object.entries(byProj).sort((a,b)=>b[1].h-a[1].h);
+  if(!sorted.length){bdEl.innerHTML='<div class="empty">אין נתונים</div>';return;}
+  bdEl.innerHTML=sorted.map(([id,{h,v}])=>{
+    const p=getProj(id);
+    const pct=totalH?Math.round(h/totalH*100):0;
+    const bpct=(sumPeriod==='month'&&p.budget)?Math.min(Math.round(h/p.budget*100),100):pct;
+    const barColor=(sumPeriod==='month'&&p.budget&&h/p.budget>=1)?'#ef4444':(sumPeriod==='month'&&p.budget&&h/p.budget>=0.8)?'#f59e0b':p.color;
+    return`<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+        <span style="display:flex;align-items:center;gap:6px;font-weight:600"><span class="dot" style="background:${p.color}"></span>${p.name}</span>
+        <span style="color:var(--text2)">${fmtHours(h)}${currentUser?.isAdmin&&v?' · '+fmtMoney(v):''}</span>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill" style="width:${bpct}%;background:${barColor}"></div></div>
+      ${sumPeriod==='month'&&p.budget?`<div style="font-size:12px;color:var(--text2);margin-top:3px">${fmtHours(h)}/${p.budget} ש׳ · ${Math.round(h/p.budget*100)}%</div>`:''}
+    </div>`;
+  }).join('');
+  const perUserEl=document.getElementById('sum-per-user'); if(!perUserEl) return;
+  if(currentUser?.isAdmin){
+    const byU={};
+    f.forEach(e=>{if(!byU[e.uid])byU[e.uid]={h:0,v:0,name:e.userName||e.uid};byU[e.uid].h+=e.hours;byU[e.uid].v+=e.value||0;});
+    const us=Object.values(byU).sort((a,b)=>b.h-a.h);
+    perUserEl.innerHTML=us.length?`<div class="card mb-sm"><div class="section-title">לפי עובד</div>
+      ${us.map(u=>`<div class="list-row"><span style="flex:1;font-weight:600">${u.name}</span>
+        <span style="color:var(--text2)">${fmtHours(u.h)}</span>
+        ${u.v?`<span class="badge-green">${fmtMoney(u.v)}</span>`:''}
+      </div>`).join('')}</div>`:'';
+  } else perUserEl.innerHTML='';
+}
 
 // ── PLANNING ──────────────────────────────────────────────────────────────────
 async function loadPlanData() {
   const snap=await getDocs(collection(db,'plans'));
   planData={}; snap.forEach(d=>{planData[d.id]=d.data();});
 }
-
-function getPlanVal(month,uid,projId){ return planData[month]?.[`${uid}_${projId}`]||0; }
-
-function calcWorkDays(month, uid=null) {
-  const[y,m]=month.split('-').map(Number);
-  const totalDays=new Date(y,m,0).getDate();
-  let count=0;
-  for(let d=1;d<=totalDays;d++){
-    const ds=`${month}-${String(d).padStart(2,'0')}`;
-    const dow=new Date(y,m-1,d).getDay();
-    if(dow===5||dow===6) continue; // weekend
-    if(isBlocked(ds,'all')) continue; // holiday
-    if(uid&&isBlocked(ds,uid)) continue; // personal
-    count++;
-  }
-  return count;
-}
+function getPlanVal(month,uid,projId){return planData[month]?.[`${uid}_${projId}`]||0;}
 
 window.savePlanning = async () => {
-  const month=document.getElementById('plan-month').value;
-  if(!month) return;
+  const month=document.getElementById('plan-month').value; if(!month) return;
   const inputs=document.querySelectorAll('#plan-table input[data-key]');
   const data={};
   inputs.forEach(inp=>{data[inp.dataset.key]=parseFloat(inp.value)||0;});
+  // save availability
+  const availData={};
+  teamMembers.forEach(mb=>{
+    const hEl=document.getElementById(`avail-${mb.uid}`);
+    const hpdEl=document.getElementById(`hpd-${mb.uid}`);
+    if(hEl) availData[mb.uid]=parseFloat(hEl.value)||0;
+    if(hpdEl) availData[`${mb.uid}_hpd`]=parseFloat(hpdEl.value)||8;
+  });
   await setDoc(doc(db,'plans',month),data);
-  planData[month]=data;
-  await saveAvailability(month);
-  renderPlanning();
-  showToast('תכנון נשמר ✓');
+  await setDoc(doc(db,'availability',month),availData);
+  planData[month]=data; availability[month]=availData;
+  renderPlanning(); showToast('תכנון נשמר ✓');
 };
 
 function renderPlanning() {
   const month=document.getElementById('plan-month')?.value||thisMonth();
+  if(!month) return;
   const[y,m]=month.split('-').map(Number);
   const activeProjs=projects.filter(p=>p.budget);
   const totalBudget=activeProjs.reduce((a,p)=>a+(p.budget||0),0);
@@ -704,195 +834,167 @@ function renderPlanning() {
   const totalAssigned=Object.values(assignedByProj).reduce((a,v)=>a+v,0);
   const totalLeft=totalBudget-totalAssigned;
 
-  // alerts
   const alertsEl=document.getElementById('plan-alerts');
   if(alertsEl){
     const alerts=[];
-    if(totalLeft>0) alerts.push({type:'warn',msg:`נשארו ${totalLeft.toFixed(1)} שעות שלא שובצו מתוך ${totalBudget} ש׳`});
+    if(totalLeft>0) alerts.push({type:'warn',msg:`נשארו ${totalLeft.toFixed(1)} שעות שלא שובצו`});
     if(totalLeft<0) alerts.push({type:'danger',msg:`שיבצת ${Math.abs(totalLeft).toFixed(1)} שעות יותר מהתקציב!`});
     alertsEl.innerHTML=alerts.map(a=>`<div class="alert alert-${a.type}" style="margin-bottom:10px">⚠ ${a.msg}</div>`).join('');
   }
 
-  // metrics
   const metricsEl=document.getElementById('plan-metrics');
   if(metricsEl) metricsEl.innerHTML=`
     <div class="metric-card"><div class="metric-val">${totalBudget}</div><div class="metric-lbl">סה"כ לשיבוץ</div></div>
     <div class="metric-card"><div class="metric-val">${totalAssigned.toFixed(0)}</div><div class="metric-lbl">שובצו</div></div>
     <div class="metric-card"><div class="metric-val" style="color:${totalLeft>0?'#dc2626':'#16a34a'}">${Math.abs(totalLeft).toFixed(0)}</div><div class="metric-lbl">${totalLeft>0?'חסרות':'עודף'}</div></div>`;
 
-  // project bars
+  // availability section
+  const availSection=document.getElementById('plan-avail-section');
+  if(availSection){
+    availSection.innerHTML=`<div class="card mb-sm"><div class="section-title">זמינות עובדים — ${MONTHS[m-1]} ${y}</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:14px">
+        <thead><tr>
+          <th style="text-align:right;padding:8px;border-bottom:1px solid var(--border);font-weight:600;color:var(--text2)">עובד</th>
+          <th style="text-align:center;padding:8px;border-bottom:1px solid var(--border);font-weight:600;color:var(--text2)">ימי עבודה</th>
+          <th style="text-align:center;padding:8px;border-bottom:1px solid var(--border);font-weight:600;color:var(--text2)">חגים/חופשות</th>
+          <th style="text-align:center;padding:8px;border-bottom:1px solid var(--border);font-weight:600;color:var(--text2)">ימים פנויים</th>
+          <th style="text-align:center;padding:8px;border-bottom:1px solid var(--border);font-weight:600;color:var(--text2)">ש'/יום</th>
+          <th style="text-align:center;padding:8px;border-bottom:1px solid var(--border);font-weight:600;color:var(--text2)">שעות זמינות</th>
+        </tr></thead><tbody>
+        ${teamMembers.map(mb=>{
+          const totalWD=calcWorkDays(month);
+          const personalB=blockedDays.filter(b=>b.uid===mb.uid&&(b.date?.startsWith(month)||(b.dateFrom?.startsWith(month)||b.dateTo?.startsWith(month)))).length;
+          const holidayB=blockedDays.filter(b=>b.uid==='all'&&(b.date?.startsWith(month)||(b.dateFrom?.startsWith(month)))).length;
+          const freeDays=Math.max(0,totalWD-personalB);
+          const hpd=getHPD(month,mb.uid);
+          const calcH=freeDays*hpd;
+          const savedH=getAvailHours(month,mb.uid);
+          return`<tr>
+            <td style="padding:8px;text-align:right">
+              <div style="display:flex;align-items:center;gap:7px">
+                <div style="width:24px;height:24px;border-radius:50%;background:${mb.color};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff">${mb.name[0]}</div>
+                <span style="font-weight:600">${mb.name}</span>
+              </div>
+            </td>
+            <td style="padding:8px;text-align:center">${totalWD}</td>
+            <td style="padding:8px;text-align:center;color:#d97706">${personalB+holidayB>0?\`-${personalB+holidayB}\`:'0'}</td>
+            <td style="padding:8px;text-align:center;font-weight:700;color:var(--accent)">${freeDays}</td>
+            <td style="padding:8px;text-align:center">
+              <input type="number" id="hpd-${mb.uid}" min="1" max="16" step="0.5" value="${hpd}"
+                style="width:55px;padding:4px;border:1px solid var(--border2);border-radius:6px;text-align:center;font-size:13px"
+                onchange="recalcAvail('${mb.uid}','${month}',${freeDays})"/>
+            </td>
+            <td style="padding:8px;text-align:center;font-weight:700" id="avail-display-${mb.uid}">${(savedH||calcH).toFixed(0)} ש'</td>
+            <input type="hidden" id="avail-${mb.uid}" value="${savedH||calcH}"/>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table></div></div>`;
+  }
+
+  // proj bars
   const barsEl=document.getElementById('plan-proj-bars');
   if(barsEl){
-    if(!activeProjs.length){barsEl.innerHTML='<div class="empty">הגדר תקציב לפרויקטים בהגדרות</div>';}
+    if(!activeProjs.length){barsEl.innerHTML='<div class="empty">הגדר תקציב לפרויקטים</div>';}
     else barsEl.innerHTML=activeProjs.map(p=>{
       const assigned=assignedByProj[p.id];
       const pct=p.budget?Math.min(Math.round(assigned/p.budget*100),100):0;
-      const barColor=assigned>p.budget?'#ef4444':assigned===p.budget?'#16a34a':p.color;
-      const status=assigned>p.budget?`<span style="color:#dc2626;font-size:12px;font-weight:600">חריגה ⚠</span>`:
-        assigned===p.budget?`<span style="color:#16a34a;font-size:12px;font-weight:600">מלא ✓</span>`:
-        `<span style="color:#d97706;font-size:12px">חסרות ${(p.budget-assigned).toFixed(0)} ש׳</span>`;
+      const barColor=assigned>(p.budget||0)?'#ef4444':assigned===(p.budget||0)?'#16a34a':p.color;
+      const status=assigned>(p.budget||0)?`<span style="color:#dc2626;font-size:12px;font-weight:600">חריגה ⚠</span>`:
+        assigned===(p.budget||0)?`<span style="color:#16a34a;font-size:12px;font-weight:600">מלא ✓</span>`:
+        `<span style="color:#d97706;font-size:12px">חסרות ${((p.budget||0)-assigned).toFixed(0)} ש'</span>`;
       return`<div style="margin-bottom:14px">
-        <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:14px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:5px">
           <span style="display:flex;align-items:center;gap:6px;font-weight:600"><span class="dot" style="background:${p.color}"></span>${p.name}</span>
-          <span style="display:flex;align-items:center;gap:8px;color:var(--text2)">${assigned.toFixed(0)}/${p.budget} ש׳ ${status}</span>
+          <span style="display:flex;align-items:center;gap:6px;color:var(--text2)">${assigned.toFixed(0)}/${p.budget} ש' ${status}</span>
         </div>
         <div class="bar-wrap"><div class="bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
       </div>`;
     }).join('');
   }
 
-  // table
-  const tableEl=document.getElementById('plan-table');
-  if(!tableEl||!activeProjs.length||!teamMembers.length) return;
-  const thS='text-align:center;font-size:13px;color:var(--text2);font-weight:600;padding:8px 6px;border-bottom:1px solid var(--border);white-space:nowrap';
-  const tdS='padding:7px 6px;border-bottom:1px solid var(--border);text-align:center;vertical-align:middle;font-size:14px';
-
-  // availability section
-  let availHtml=`<div class="card mb-sm"><div class="section-title">זמינות עובדים — ${MONTHS[m-1]} ${y}</div>
-    <table style="width:100%;border-collapse:collapse;font-size:14px">
-    <thead><tr>
-      <th style="text-align:right;${thS}">עובד</th>
-      <th style="${thS}">ימי עבודה בחודש</th>
-      <th style="${thS}">חגים/חופשות</th>
-      <th style="${thS}">ימים פנויים</th>
-      <th style="${thS}">ש׳/יום</th>
-      <th style="${thS}">שעות זמינות</th>
-    </tr></thead><tbody>`;
-
-  teamMembers.forEach(mb=>{
-    const totalWorkDays=calcWorkDays(month);
-    const personalBlocked=blockedDays.filter(b=>b.uid===mb.uid&&b.date.startsWith(month)).length;
-    const holidayBlocked=blockedDays.filter(b=>(b.uid==='all'||b.uid==='global')&&b.date.startsWith(month)).length;
-    const totalBlocked=personalBlocked+holidayBlocked;
-    const freeDays=Math.max(0,totalWorkDays-personalBlocked);
-    const hpd=getAvailHoursPerDay(month,mb.uid)||mb.hpd||8;
-    const calcHours=freeDays*hpd;
-    const savedHours=getAvailHours(month,mb.uid);
-    availHtml+=`<tr>
-      <td style="text-align:right;${tdS}">
-        <div style="display:flex;align-items:center;gap:7px">
-          <div style="width:26px;height:26px;border-radius:50%;background:${mb.color};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#fff;flex-shrink:0">${mb.name[0]}</div>
-          <span style="font-weight:600">${mb.name}</span>
-        </div>
-      </td>
-      <td style="${tdS}">${totalWorkDays}</td>
-      <td style="${tdS};color:#d97706">${totalBlocked>0?`-${totalBlocked}`:'-'}</td>
-      <td style="${tdS};font-weight:700;color:var(--accent)">${freeDays}</td>
-      <td style="${tdS}"><input type="number" id="hpd-${mb.uid}" min="1" max="16" step="0.5" value="${hpd}" 
-        style="width:55px;padding:4px;border:1px solid var(--border2);border-radius:6px;text-align:center;font-size:13px"
-        onchange="recalcAvail('${mb.uid}','${month}',${freeDays})"/></td>
-      <td style="${tdS};font-weight:700" id="avail-display-${mb.uid}">${(savedHours||calcHours).toFixed(0)} ש׳</td>
-      <input type="hidden" id="avail-${mb.uid}" value="${savedHours||calcHours}"/>
-    </tr>`;
-  });
-  availHtml+=`</tbody></table></div>`;
-
   // assignment table
-  let tableHtml=`<thead><tr>
+  const tableEl=document.getElementById('plan-table'); if(!tableEl||!activeProjs.length||!teamMembers.length) return;
+  const thS='text-align:center;font-size:13px;color:var(--text2);font-weight:600;padding:8px 6px;border-bottom:1px solid var(--border);white-space:nowrap';
+  const tdS='padding:7px 5px;border-bottom:1px solid var(--border);text-align:center;vertical-align:middle;font-size:14px';
+  let html=`<thead><tr>
     <th style="text-align:right;${thS}">עובד</th>
-    ${activeProjs.map(p=>`<th style="${thS}"><span class="dot" style="background:${p.color};margin-left:4px"></span>${p.name}</th>`).join('')}
-    <th style="${thS}">שובץ</th>
-    <th style="${thS}">זמין</th>
-    <th style="${thS}">יתרה</th>
+    ${activeProjs.map(p=>`<th style="${thS}"><span class="dot" style="background:${p.color};margin-left:3px"></span>${p.name.substring(0,12)}</th>`).join('')}
+    <th style="${thS}">שובץ</th><th style="${thS}">זמין</th><th style="${thS}">יתרה</th>
   </tr></thead><tbody>`;
-
   teamMembers.forEach(mb=>{
     const memberAssigned=activeProjs.reduce((a,p)=>a+getPlanVal(month,mb.uid,p.id),0);
-    const avail=getAvailHours(month,mb.uid)||0;
+    const avail=parseFloat(document.getElementById(`avail-${mb.uid}`)?.value)||getAvailHours(month,mb.uid)||0;
     const diff=avail-memberAssigned;
     const diffColor=diff<0?'#dc2626':diff===0?'#16a34a':'#d97706';
-    tableHtml+=`<tr>
+    html+=`<tr>
       <td style="text-align:right;${tdS}">
-        <div style="display:flex;align-items:center;gap:7px">
-          <div style="width:26px;height:26px;border-radius:50%;background:${mb.color};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#fff;flex-shrink:0">${mb.name[0]}</div>
-          ${mb.name}
+        <div style="display:flex;align-items:center;gap:6px">
+          <div style="width:24px;height:24px;border-radius:50%;background:${mb.color};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;flex-shrink:0">${mb.name[0]}</div>
+          <span style="font-size:13px;font-weight:600">${mb.name}</span>
         </div>
       </td>
       ${activeProjs.map(p=>`<td style="${tdS}">
         <input type="number" min="0" max="500" step="0.5" value="${getPlanVal(month,mb.uid,p.id)}"
           data-key="${mb.uid}_${p.id}"
-          style="width:60px;padding:5px;border:1px solid var(--border2);border-radius:6px;font-size:13px;text-align:center"
-          onchange="updatePlanTotal('${month}')"/>
+          style="width:58px;padding:4px;border:1px solid var(--border2);border-radius:6px;font-size:13px;text-align:center"
+          onchange="updatePlanLive('${month}')"/>
       </td>`).join('')}
-      <td style="${tdS};font-weight:700" id="member-total-${mb.uid}">${memberAssigned.toFixed(0)}</td>
-      <td style="${tdS};color:var(--text2)" id="avail-show-${mb.uid}">${avail.toFixed(0)}</td>
-      <td style="${tdS};font-weight:700;color:${diffColor}" id="member-diff-${mb.uid}">${diff.toFixed(0)}</td>
+      <td style="${tdS};font-weight:700" id="mt-${mb.uid}">${memberAssigned.toFixed(0)}</td>
+      <td style="${tdS};color:var(--text2)" id="av-${mb.uid}">${avail.toFixed(0)}</td>
+      <td style="${tdS};font-weight:700;color:${diffColor}" id="df-${mb.uid}">${diff.toFixed(0)}</td>
     </tr>`;
   });
-
-  tableHtml+=`<tr style="background:var(--bg3)">
-    <td style="text-align:right;${tdS};font-weight:700">סה"כ שובץ</td>
-    ${activeProjs.map(p=>`<td style="${tdS};font-weight:700" id="proj-total-${p.id}">${assignedByProj[p.id].toFixed(0)}</td>`).join('')}
+  html+=`<tr style="background:var(--bg3)">
+    <td style="text-align:right;${tdS};font-weight:700">סה"כ</td>
+    ${activeProjs.map(p=>`<td style="${tdS};font-weight:700" id="pt-${p.id}">${assignedByProj[p.id].toFixed(0)}</td>`).join('')}
     <td style="${tdS};font-weight:700;color:var(--accent)" id="grand-total">${totalAssigned.toFixed(0)}</td>
     <td style="${tdS}"></td><td style="${tdS}"></td>
   </tr>
   <tr>
-    <td style="text-align:right;${tdS};font-size:12px;color:var(--text2)">תקציב פרויקט</td>
-    ${activeProjs.map(p=>{
-      const diff=assignedByProj[p.id]-(p.budget||0);
-      const color=diff>0?'#dc2626':diff===0?'#16a34a':'#d97706';
-      return`<td style="${tdS};font-size:12px;font-weight:600;color:${color}">${p.budget}${diff>0?' ⚠':diff===0?' ✓':''}</td>`;
-    }).join('')}
-    <td style="${tdS};font-size:12px;color:var(--text2)">${totalBudget}</td>
+    <td style="text-align:right;${tdS};font-size:12px;color:var(--text3)">תקציב</td>
+    ${activeProjs.map(p=>{const d=assignedByProj[p.id]-(p.budget||0);const c=d>0?'#dc2626':d===0?'#16a34a':'#d97706';return`<td style="${tdS};font-size:12px;font-weight:700;color:${c}">${p.budget||0}${d>0?' ⚠':d===0?' ✓':''}</td>`;}).join('')}
+    <td style="${tdS};font-size:12px;color:var(--text3)">${totalBudget}</td>
     <td style="${tdS}"></td><td style="${tdS}"></td>
   </tr></tbody>`;
-
-  tableEl.innerHTML=tableHtml;
-
-  // render availability section before table card
-  const planContent=document.getElementById('plan-avail-section');
-  if(planContent) planContent.innerHTML=availHtml;
+  tableEl.innerHTML=html;
 }
 
 window.recalcAvail=(uid,month,freeDays)=>{
   const hpd=parseFloat(document.getElementById(`hpd-${uid}`)?.value)||8;
-  const calc=(freeDays*hpd);
-  const inp=document.getElementById(`avail-${uid}`);
-  const disp=document.getElementById(`avail-display-${uid}`);
-  if(inp) inp.value=calc;
-  if(disp) disp.textContent=calc.toFixed(0)+' ש׳';
-  updatePlanTotal(month);
+  const calc=freeDays*hpd;
+  const inp=document.getElementById(`avail-${uid}`); if(inp) inp.value=calc;
+  const disp=document.getElementById(`avail-display-${uid}`); if(disp) disp.textContent=calc.toFixed(0)+' ש\'';
+  updatePlanLive(month);
 };
 
-window.updatePlanTotal=(month)=>{
+window.updatePlanLive=month=>{
   const activeProjs=projects.filter(p=>p.budget);
+  let grandTotal=0;
   teamMembers.forEach(mb=>{
-    const total=activeProjs.reduce((a,p)=>{
-      const inp=document.querySelector(`input[data-key="${mb.uid}_${p.id}"]`);
-      return a+(parseFloat(inp?.value)||0);
-    },0);
-    const el=document.getElementById(`member-total-${mb.uid}`);
-    if(el) el.textContent=total.toFixed(0);
+    const total=activeProjs.reduce((a,p)=>{const inp=document.querySelector(`input[data-key="${mb.uid}_${p.id}"]`);return a+(parseFloat(inp?.value)||0);},0);
     const avail=parseFloat(document.getElementById(`avail-${mb.uid}`)?.value)||0;
     const diff=avail-total;
-    const diffEl=document.getElementById(`member-diff-${mb.uid}`);
-    const availEl=document.getElementById(`avail-show-${mb.uid}`);
-    if(availEl) availEl.textContent=avail.toFixed(0);
-    if(diffEl){diffEl.textContent=diff.toFixed(0);diffEl.style.color=diff<0?'#dc2626':diff===0?'#16a34a':'#d97706';}
+    const diffColor=diff<0?'#dc2626':diff===0?'#16a34a':'#d97706';
+    const mtEl=document.getElementById(`mt-${mb.uid}`); if(mtEl) mtEl.textContent=total.toFixed(0);
+    const avEl=document.getElementById(`av-${mb.uid}`); if(avEl) avEl.textContent=avail.toFixed(0);
+    const dfEl=document.getElementById(`df-${mb.uid}`); if(dfEl){dfEl.textContent=diff.toFixed(0);dfEl.style.color=diffColor;}
   });
   activeProjs.forEach(p=>{
-    const total=teamMembers.reduce((a,mb)=>{
-      const inp=document.querySelector(`input[data-key="${mb.uid}_${p.id}"]`);
-      return a+(parseFloat(inp?.value)||0);
-    },0);
-    const el=document.getElementById(`proj-total-${p.id}`);
-    if(el) el.textContent=total.toFixed(0);
+    const total=teamMembers.reduce((a,mb)=>{const inp=document.querySelector(`input[data-key="${mb.uid}_${p.id}"]`);return a+(parseFloat(inp?.value)||0);},0);
+    const ptEl=document.getElementById(`pt-${p.id}`); if(ptEl) ptEl.textContent=total.toFixed(0);
+    grandTotal+=total;
   });
-  const grand=activeProjs.reduce((a,p)=>{
-    const el=document.getElementById(`proj-total-${p.id}`);
-    return a+(parseFloat(el?.textContent)||0);
-  },0);
-  const grandEl=document.getElementById('grand-total');
-  if(grandEl) grandEl.textContent=grand.toFixed(0);
+  const gtEl=document.getElementById('grand-total'); if(gtEl) gtEl.textContent=grandTotal.toFixed(0);
   const totalBudget=activeProjs.reduce((a,p)=>a+(p.budget||0),0);
-  const left=totalBudget-grand;
+  const left=totalBudget-grandTotal;
   const alertsEl=document.getElementById('plan-alerts');
   if(alertsEl) alertsEl.innerHTML=left>0?`<div class="alert alert-warn" style="margin-bottom:10px">⚠ נשארו ${left.toFixed(1)} שעות שלא שובצו</div>`:
     left<0?`<div class="alert alert-danger" style="margin-bottom:10px">⚠ שיבצת ${Math.abs(left).toFixed(1)} שעות יותר מהתקציב!</div>`:'';
   const metricsEl=document.getElementById('plan-metrics');
   if(metricsEl) metricsEl.innerHTML=`
     <div class="metric-card"><div class="metric-val">${totalBudget}</div><div class="metric-lbl">סה"כ לשיבוץ</div></div>
-    <div class="metric-card"><div class="metric-val">${grand.toFixed(0)}</div><div class="metric-lbl">שובצו</div></div>
+    <div class="metric-card"><div class="metric-val">${grandTotal.toFixed(0)}</div><div class="metric-lbl">שובצו</div></div>
     <div class="metric-card"><div class="metric-val" style="color:${left>0?'#dc2626':'#16a34a'}">${Math.abs(left).toFixed(0)}</div><div class="metric-lbl">${left>0?'חסרות':'עודף'}</div></div>`;
 };
 
@@ -909,12 +1011,12 @@ window.exportExcel=()=>{
   }).sort((a,b)=>a.date.localeCompare(b.date));
   if(!list.length){showToast('אין נתונים');return;}
   const wb=XLSX.utils.book_new();
-  const rows=[['תאריך','עובד','פרויקט','שעת התחלה','שעת סיום','שעות',...(currentUser?.isAdmin?['שווי']:[]),'הערה']];
-  list.forEach(e=>{const p=getProj(e.projId);rows.push([e.date,e.userName||'',p.name,e.startTime||'',e.endTime||'',e.hours,...(currentUser?.isAdmin?[e.value||'']:[]),e.note||'']);});
+  const rows=[['תאריך','עובד','לקוח','פרויקט','שעת התחלה','שעת סיום','שעות',...(currentUser?.isAdmin?['שווי']:[]),'הערה']];
+  list.forEach(e=>{const p=getProj(e.projId);const c=getClient(p.clientId);rows.push([e.date,e.userName||'',p.clientId?c.name:'',p.name,e.startTime||'',e.endTime||'',e.hours,...(currentUser?.isAdmin?[e.value||'']:[]),e.note||'']);});
   const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols']=[{wch:12},{wch:15},{wch:18},{wch:12},{wch:12},{wch:8},{wch:10},{wch:30}];
+  ws['!cols']=[{wch:12},{wch:15},{wch:18},{wch:20},{wch:12},{wch:12},{wch:8},{wch:10},{wch:30}];
   XLSX.utils.book_append_sheet(wb,ws,'דיווחים');
-  XLSX.writeFile(wb,`שעות_${fMonth||'כל_הזמן'}.xlsx`);
+  XLSX.writeFile(wb,`TCGroup_שעות_${fMonth||'כל_הזמן'}.xlsx`);
 };
 window.exportCSV=()=>{
   const fProj=document.getElementById('exp-proj').value;
@@ -926,35 +1028,30 @@ window.exportCSV=()=>{
     return true;
   }).sort((a,b)=>a.date.localeCompare(b.date));
   if(!list.length){showToast('אין נתונים');return;}
-  const rows=[['תאריך','עובד','פרויקט','שעת התחלה','שעת סיום','שעות','הערה']];
-  list.forEach(e=>{const p=getProj(e.projId);rows.push([e.date,e.userName||'',p.name,e.startTime||'',e.endTime||'',e.hours,e.note||'']);});
+  const rows=[['תאריך','עובד','לקוח','פרויקט','שעת התחלה','שעת סיום','שעות','הערה']];
+  list.forEach(e=>{const p=getProj(e.projId);const c=getClient(p.clientId);rows.push([e.date,e.userName||'',p.clientId?c.name:'',p.name,e.startTime||'',e.endTime||'',e.hours,e.note||'']);});
   const csv=rows.map(r=>r.join(',')).join('\n');
   const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`שעות_${fMonth||'כל_הזמן'}.csv`;a.click();
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`TCGroup_שעות_${fMonth||'כל_הזמן'}.csv`;a.click();
 };
 
 // ── MODALS ────────────────────────────────────────────────────────────────────
-window.openModal=(id)=>{
-  document.getElementById(id).style.display='flex';
-};
-window.closeModal=()=>{
-  document.querySelectorAll('.modal-overlay').forEach(m=>m.style.display='none');
-};
-document.addEventListener('click',e=>{
-  if(e.target.classList.contains('modal-overlay')) closeModal();
-});
+window.openModal=id=>{document.getElementById(id).style.display='flex';};
+window.closeModal=()=>{document.querySelectorAll('.modal-overlay').forEach(m=>m.style.display='none');};
+window.onBlockTypeChange=()=>{document.getElementById('block-member-row').style.display=document.getElementById('block-type').value==='personal'?'block':'none';};
+window.onBlockRangeChange=()=>{document.getElementById('block-range-row').style.display=document.getElementById('block-use-range').checked?'block':'none';};
 
 // ── UI ────────────────────────────────────────────────────────────────────────
-window.showPage=(name)=>{
+window.showPage=name=>{
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('page-'+name)?.classList.add('active');
   document.getElementById('nav-'+name)?.classList.add('active');
-  const titles={dashboard:'דשבורד',report:'דיווח שעות',log:'יומן',summary:'סיכום',plan:'תכנון חודשי',settings:'הגדרות'};
+  const titles={dashboard:'דשבורד TCGroup',report:'דיווח שעות',log:'יומן',plan:'תכנון חודשי',analysis:'ניתוח וסיכום',settings:'הגדרות'};
   document.getElementById('page-title').textContent=titles[name]||name;
   if(name==='log') renderLog();
-  if(name==='summary') renderSummary();
-  if(name==='settings'){renderProjectsSettings();renderTeamSettings();}
+  if(name==='analysis') renderSummary();
+  if(name==='settings'){renderProjectsSettings();renderTeamSettings();renderClientsSettings();}
   if(name==='dashboard') renderDashboard();
   if(name==='plan') renderPlanning();
 };
@@ -967,17 +1064,7 @@ window.setLogTab=(tab,btn)=>{
   if(tab==='cal'){calMonth=document.getElementById('log-month-filter')?.value||thisMonth();renderCalendar();}
 };
 
-window.showToast=(msg)=>{
-  const t=document.getElementById('toast');
-  t.textContent=msg;t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'),2500);
-};
-
-// block type change
-window.onBlockTypeChange=()=>{
-  const t=document.getElementById('block-type').value;
-  document.getElementById('block-member-row').style.display=t==='personal'?'block':'none';
-};
+window.showToast=msg=>{const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);};
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',async()=>{
@@ -985,32 +1072,26 @@ document.addEventListener('DOMContentLoaded',async()=>{
   const saved=localStorage.getItem('wt_user');
   if(saved){
     currentUser=JSON.parse(saved);
-    await loadProjects();
-    await loadBlockedDays();
-    await loadAvailability();
-    await loadPlanData();
+    await loadClients(); await loadProjects(); await loadBlockedDays();
+    await loadAvailability(); await loadPlanData(); await loadTemplates();
     subscribeEntries();
     document.getElementById('login-screen').style.display='none';
     document.getElementById('app-shell').style.display='flex';
     document.getElementById('user-name').textContent=currentUser.name;
     if(currentUser.isAdmin) document.getElementById('admin-badge').style.display='inline-flex';
+    const m=thisMonth();
     document.getElementById('r-date').value=todayStr();
-    document.getElementById('log-month-filter').value=thisMonth();
-    document.getElementById('exp-month').value=thisMonth();
-    document.getElementById('dash-month').value=thisMonth();
-    document.getElementById('plan-month').value=thisMonth();
+    ['log-month-filter','exp-month','dash-month','plan-month'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=m;});
     showPage('dashboard');
   }
   ['r-start','r-end'].forEach(id=>{
     document.getElementById(id)?.addEventListener('change',()=>{
       const s=document.getElementById('r-start').value;
       const e=document.getElementById('r-end').value;
-      if(s&&e){const mins=timeToMins(e)-timeToMins(s);if(mins>0)document.getElementById('r-hours-display').textContent=`${(mins/60).toFixed(1)} שעות`;else document.getElementById('r-hours-display').textContent='';}
+      if(s&&e){const mins=timeToMins(e)-timeToMins(s);document.getElementById('r-hours-display').textContent=mins>0?`${(mins/60).toFixed(1)} שעות`:'';}
     });
   });
-  // populate block member select
-  const bms=document.getElementById('block-member');
-  if(bms) setTimeout(()=>{bms.innerHTML='<option value="">בחר עובד...</option>'+teamMembers.map(m=>`<option value="${m.uid}">${m.name}</option>`).join('');},500);
+  document.addEventListener('click',e=>{if(e.target.classList.contains('modal-overlay')) closeModal();});
 });
 </script>
 
@@ -1041,84 +1122,81 @@ input[type=checkbox]{width:18px;height:18px}
 button{cursor:pointer;border:none;font-weight:600}
 .btn{background:var(--accent);color:#fff;border-radius:var(--r-sm);padding:12px 18px;box-shadow:var(--shadow)}
 .btn:active{opacity:.85}
-.btn-ghost{background:var(--bg2);color:var(--text);border:1.5px solid var(--border);border-radius:var(--r-sm);padding:11px 16px}
-.btn-sm{background:var(--accent);color:#fff;border-radius:var(--r-xs);padding:8px 14px;font-size:14px}
+.btn-ghost{background:var(--bg2);color:var(--text);border:1.5px solid var(--border);border-radius:var(--r-sm);padding:10px 14px}
 .icon-btn{background:none;color:var(--text3);padding:4px 8px;font-size:20px;line-height:1}
 .icon-btn:hover{color:var(--red)}
 
-#login-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100dvh;background:linear-gradient(135deg,#f0f4ff 0%,#f8f9fb 100%);gap:20px;padding:40px}
+#login-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100dvh;background:linear-gradient(135deg,#f0f4ff,#f8f9fb);gap:18px;padding:40px}
 .login-card{background:var(--bg2);border-radius:var(--r);padding:28px 24px;width:100%;max-width:360px;display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow-md);border:1px solid var(--border)}
 #login-error{color:var(--red);font-size:14px;display:none;text-align:center;padding:8px;background:var(--red-light);border-radius:var(--r-xs)}
 
 #app-shell{display:none;flex-direction:column;height:100dvh;padding-top:var(--st)}
-#topbar{padding:14px 18px 12px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;background:var(--bg2);box-shadow:var(--shadow)}
-#topbar h1{font-size:18px;font-weight:700}
+#topbar{padding:12px 16px 10px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;background:var(--bg2);box-shadow:var(--shadow)}
+#topbar h1{font-size:17px;font-weight:700}
 .user-info{display:flex;align-items:center;gap:8px}
-#user-name{font-size:14px;color:var(--text2);font-weight:500}
-#admin-badge{display:none;background:var(--accent);color:#fff;font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;align-items:center}
+#user-name{font-size:13px;color:var(--text2);font-weight:500}
+#admin-badge{display:none;background:var(--accent);color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;align-items:center}
 .badge{background:var(--accent);color:#fff;font-size:12px;font-weight:700;padding:2px 9px;border-radius:20px}
 .badge-green{background:var(--green-light);color:var(--green);font-size:13px;font-weight:600;padding:2px 9px;border-radius:20px}
 .badge-holiday{background:#fff3cd;color:#856404;font-size:12px;font-weight:600;padding:2px 8px;border-radius:20px}
-.badge-personal{font-size:12px;font-weight:600;padding:2px 8px;border-radius:20px}
 .tag{font-size:12px;font-weight:600;padding:2px 8px;border-radius:20px}
-.logout-btn{background:var(--bg3);color:var(--text2);font-size:13px;font-weight:600;padding:6px 12px;border:1px solid var(--border);border-radius:var(--r-xs)}
+.logout-btn{background:var(--bg3);color:var(--text2);font-size:12px;font-weight:600;padding:5px 10px;border:1px solid var(--border);border-radius:var(--r-xs)}
 
-#content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 16px calc(72px + var(--sb) + 16px)}
+#content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 14px calc(70px + var(--sb) + 14px)}
 
 #navbar{position:fixed;bottom:0;left:0;right:0;padding-bottom:var(--sb);background:var(--bg2);border-top:1px solid var(--border);display:flex;z-index:100;box-shadow:0 -1px 3px rgba(0,0,0,.06)}
-.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 2px;border:none;background:none;color:var(--text3);font-size:10px;font-weight:600;transition:color .15s}
+.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 2px;border:none;background:none;color:var(--text3);font-size:10px;font-weight:600;transition:color .15s}
 .nav-btn.active{color:var(--accent)}
-.nav-icon{font-size:20px;line-height:1;padding:3px 8px;border-radius:8px;transition:background .15s}
+.nav-icon{font-size:20px;line-height:1;padding:3px 8px;border-radius:8px}
 .nav-btn.active .nav-icon{background:var(--accent-light)}
 
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px;box-shadow:var(--shadow)}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;box-shadow:var(--shadow)}
 .mb-sm{margin-bottom:12px}
-.section-title{font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px}
+.section-title{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px}
 
-.metric-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;text-align:center;box-shadow:var(--shadow)}
-.metric-val{font-size:24px;font-weight:700;color:var(--text)}
-.metric-lbl{font-size:12px;color:var(--text2);margin-top:4px;font-weight:500}
+.metric-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px 8px;text-align:center;box-shadow:var(--shadow)}
+.metric-val{font-size:22px;font-weight:700;color:var(--text)}
+.metric-lbl{font-size:11px;color:var(--text2);margin-top:4px;font-weight:500}
 
-.dash-metric{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;text-align:center;box-shadow:var(--shadow)}
-.dash-metric-val{font-size:22px;font-weight:700;color:var(--accent)}
-.dash-metric-lbl{font-size:13px;color:var(--text2);margin-top:4px;font-weight:500}
-.dash-metric-sub{font-size:12px;color:var(--text3);margin-top:3px}
+.dash-metric{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;text-align:center;box-shadow:var(--shadow)}
+.dash-metric-val{font-size:20px;font-weight:700;color:var(--accent)}
+.dash-metric-lbl{font-size:12px;color:var(--text2);margin-top:3px;font-weight:500}
+.dash-metric-sub{font-size:11px;color:var(--text3);margin-top:2px}
 
 .bar-wrap{background:var(--bg3);border-radius:6px;height:8px;overflow:hidden}
-.bar-fill{height:100%;border-radius:6px;transition:width .5s}
+.bar-fill{height:100%;border-radius:6px;transition:width .4s}
 .dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0}
 
-.alert{border-radius:var(--r-sm);padding:12px 16px;font-size:14px;margin-bottom:10px;display:flex;gap:8px;font-weight:500}
+.alert{border-radius:var(--r-sm);padding:11px 14px;font-size:14px;margin-bottom:10px;display:flex;gap:8px;font-weight:500}
 .alert-warn{background:var(--yellow-light);color:var(--yellow);border:1px solid #fde68a}
 .alert-danger{background:var(--red-light);color:var(--red);border:1px solid #fca5a5}
 
-.list-row{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--border);font-size:15px}
+.list-row{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border);font-size:14px}
 .list-row:last-child{border-bottom:none}
 
-.inner-tabs{display:flex;gap:4px;margin-bottom:14px;background:var(--bg3);border-radius:var(--r-sm);padding:4px}
-.inner-tab{flex:1;padding:9px;text-align:center;font-size:14px;font-weight:600;color:var(--text2);border-radius:8px;border:none;background:none;cursor:pointer;transition:all .15s}
+.inner-tabs{display:flex;gap:4px;margin-bottom:14px;background:var(--bg3);border-radius:var(--r-sm);padding:3px}
+.inner-tab{flex:1;padding:8px;text-align:center;font-size:13px;font-weight:600;color:var(--text2);border-radius:8px;border:none;background:none;cursor:pointer;transition:all .15s}
 .inner-tab.active{background:var(--bg2);color:var(--accent);box-shadow:var(--shadow)}
 
-.hours-preview{font-size:15px;color:var(--accent);font-weight:700;min-height:22px;margin:6px 0}
-.empty{text-align:center;padding:28px 0;color:var(--text3);font-size:15px}
+.hours-preview{font-size:15px;color:var(--accent);font-weight:700;min-height:22px;margin:5px 0}
+.empty{text-align:center;padding:24px 0;color:var(--text3);font-size:14px}
 
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
-.cal-head{text-align:center;font-size:12px;color:var(--text3);padding:5px 0;font-weight:700}
-.cal-cell{border-radius:8px;padding:4px 3px;min-height:64px;border:1.5px solid transparent;font-size:10px;background:var(--bg3);cursor:pointer;transition:border-color .15s}
+.cal-head{text-align:center;font-size:11px;color:var(--text3);padding:5px 0;font-weight:700}
+.cal-cell{border-radius:8px;padding:4px 3px;min-height:62px;border:1.5px solid transparent;font-size:10px;background:var(--bg3);cursor:pointer;transition:border-color .15s}
 .cal-cell:hover{border-color:var(--accent)}
 .cal-today{border-color:var(--accent)!important;background:var(--accent-light)}
-.cal-wknd{opacity:.3;cursor:default}
+.cal-wknd{opacity:.28;cursor:default}
 .cal-num{font-weight:700;font-size:12px;color:var(--text2);margin-bottom:2px}
 
-/* MODALS */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:300;display:none;align-items:flex-end;justify-content:center}
-.modal-box{background:var(--bg2);border-radius:var(--r) var(--r) 0 0;padding:20px 20px calc(20px + var(--sb));width:100%;max-width:500px;border-top:1px solid var(--border2);animation:slideUp .25s ease;max-height:80vh;overflow-y:auto}
+.modal-box{background:var(--bg2);border-radius:var(--r) var(--r) 0 0;padding:20px 20px calc(20px + var(--sb));width:100%;max-width:500px;border-top:1px solid var(--border2);animation:slideUp .25s ease;max-height:85vh;overflow-y:auto}
 @keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
 .modal-title{font-size:17px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between}
 .modal-row{margin-bottom:12px}
 .modal-label{font-size:13px;color:var(--text2);margin-bottom:5px;font-weight:600}
 
-#toast{position:fixed;bottom:calc(74px + var(--sb) + 10px);left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:#fff;border-radius:var(--r-sm);padding:12px 20px;font-size:15px;font-weight:600;opacity:0;transition:all .25s;pointer-events:none;white-space:nowrap;z-index:400;box-shadow:var(--shadow-md)}
+#toast{position:fixed;bottom:calc(72px + var(--sb) + 10px);left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:#fff;border-radius:var(--r-sm);padding:11px 18px;font-size:14px;font-weight:600;opacity:0;transition:all .25s;pointer-events:none;white-space:nowrap;z-index:400;box-shadow:var(--shadow-md)}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
 .page{display:none}
@@ -1131,9 +1209,11 @@ button{cursor:pointer;border:none;font-weight:600}
 
 <!-- LOGIN -->
 <div id="login-screen">
-  <div style="font-size:52px">⏱</div>
-  <h1 style="font-size:32px;font-weight:700;color:var(--accent)">מעקב שעות</h1>
-  <p style="color:var(--text2)">מערכת דיווח שעות לצוות</p>
+  <div style="font-size:48px">⏱</div>
+  <div style="text-align:center">
+    <h1 style="font-size:28px;font-weight:700;color:var(--accent)">TCGroup</h1>
+    <p style="color:var(--text2);font-size:15px;margin-top:4px">מערכת ניהול שעות ופרויקטים</p>
+  </div>
   <div class="login-card">
     <select id="login-name"></select>
     <input type="password" id="login-code" placeholder="קוד אישי" maxlength="10" onkeydown="if(event.key==='Enter') doLogin()"/>
@@ -1152,7 +1232,6 @@ button{cursor:pointer;border:none;font-weight:600}
       <button class="logout-btn" onclick="doLogout()">יציאה</button>
     </div>
   </div>
-
   <div id="content">
 
     <!-- DASHBOARD -->
@@ -1168,26 +1247,27 @@ button{cursor:pointer;border:none;font-weight:600}
       <div id="report-alerts"></div>
       <div class="card mb-sm">
         <div class="section-title">דיווח חדש</div>
-        <div style="margin-bottom:12px"><input type="date" id="r-date"/></div>
-        <div style="margin-bottom:12px"><select id="r-proj"></select></div>
-        <div style="display:flex;gap:10px;margin-bottom:6px">
-          <div style="flex:1">
-            <div style="font-size:13px;color:var(--text2);margin-bottom:5px;font-weight:600">שעת התחלה</div>
-            <input type="time" id="r-start"/>
-          </div>
-          <div style="flex:1">
-            <div styl            <div style="font-size:13px;color:var(--text2);margin-bottom:5px;font-weight:600">שעת סיום</div>
-            <input type="time" id="r-end"/>
-          </div>
+        <div style="margin-bottom:10px"><input type="date" id="r-date"/></div>
+        <div style="margin-bottom:10px"><select id="r-proj"></select></div>
+        <div style="display:flex;gap:10px;margin-bottom:5px">
+          <div style="flex:1"><div style="font-size:12px;color:var(--text2);margin-bottom:4px;font-weight:600">שעת התחלה</div><input type="time" id="r-start"/></div>
+          <div style="flex:1"><div style="font-size:12px;color:var(--text2);margin-bottom:4px;font-weight:600">שעת סיום</div><input type="time" id="r-end"/></div>
         </div>
         <div class="hours-preview" id="r-hours-display"></div>
-        <div style="margin-bottom:12px"><input type="text" id="r-note" placeholder="הערה (אופציונלי)"/></div>
-        <button class="btn" style="width:100%" onclick="addEntry()">+ הוסף דיווח</button>
+        <div style="margin-bottom:10px"><input type="text" id="r-note" placeholder="הערה (אופציונלי)"/></div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button class="btn" style="flex:1" onclick="addEntry()">+ הוסף דיווח</button>
+          <button class="btn-ghost" onclick="saveTemplate()" title="שמור כתבנית">⭐</button>
+        </div>
+      </div>
+      <div class="card mb-sm" id="templates-card">
+        <div class="section-title">תבניות מהירות</div>
+        <div id="templates-list"></div>
       </div>
       <div class="card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
           <div class="section-title" style="margin-bottom:0">דיווחים היום</div>
-          <div id="today-total" style="font-size:14px;color:var(--text2);font-weight:600"></div>
+          <div id="today-total" style="font-size:13px;color:var(--text2);font-weight:600"></div>
         </div>
         <div id="today-list"></div>
       </div>
@@ -1200,51 +1280,24 @@ button{cursor:pointer;border:none;font-weight:600}
         <button class="inner-tab log-tab" onclick="setLogTab('cal',this)">📅 לוח חודשי</button>
       </div>
       <div id="log-list-view">
-        <div style="display:flex;gap:10px;margin-bottom:14px">
+        <div style="display:flex;gap:8px;margin-bottom:12px">
           <select id="log-proj-filter" onchange="renderLog()" style="flex:1"></select>
           <input type="month" id="log-month-filter" onchange="renderLog()" style="flex:1"/>
         </div>
         <div id="log-list"></div>
       </div>
       <div id="log-cal-view" style="display:none">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-          <button class="btn-ghost" onclick="prevMonth()" style="padding:10px 18px;font-size:18px">→</button>
-          <span id="cal-month-label" style="font-size:18px;font-weight:700"></span>
-          <button class="btn-ghost" onclick="nextMonth()" style="padding:10px 18px;font-size:18px">←</button>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <button class="btn-ghost" onclick="prevMonth()" style="padding:9px 16px;font-size:18px">→</button>
+          <span id="cal-month-label" style="font-size:17px;font-weight:700"></span>
+          <button class="btn-ghost" onclick="nextMonth()" style="padding:9px 16px;font-size:18px">←</button>
         </div>
         <div class="cal-grid" id="cal-grid"></div>
-        <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:10px;font-size:13px">
-          <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:#fff3cd;border:1px solid #ffc107;display:inline-block"></span>חג/שבתון</span>
-          <span style="display:flex;align-items:center;gap:5px"><span style="width:14px;height:14px;border-radius:50%;background:#5b61e8;display:inline-flex;align-items:center;justify-content:center;font-size:8px;color:#fff">✕</span>חופשה אישית</span>
+        <div style="margin-top:10px;display:flex;gap:10px;font-size:12px;flex-wrap:wrap">
+          <span style="display:flex;align-items:center;gap:4px"><span style="width:11px;height:11px;border-radius:3px;background:#fff3cd;border:1px solid #ffc107;display:inline-block"></span>חג</span>
+          <span style="display:flex;align-items:center;gap:4px"><span style="width:13px;height:13px;border-radius:50%;background:#5b61e8;display:inline-flex;align-items:center;justify-content:center;font-size:7px;color:#fff">✕</span>חופשה אישית</span>
         </div>
-        <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px" id="cal-legend"></div>
-        <p style="font-size:12px;color:var(--text3);margin-top:8px">לחץ על יום לחסימה/פתיחה (מנהל בלבד)</p>
-      </div>
-    </div>
-
-    <!-- SUMMARY -->
-    <div class="page" id="page-summary">
-      <div class="inner-tabs">
-        <button class="inner-tab sum-tab active" onclick="setSumPeriod('month',this)">החודש</button>
-        <button class="inner-tab sum-tab" onclick="setSumPeriod('week',this)">השבוע</button>
-        <button class="inner-tab sum-tab" onclick="setSumPeriod('all',this)">הכל</button>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:14px" id="sum-metrics"></div>
-      <div id="sum-per-user"></div>
-      <div class="card mb-sm">
-        <div class="section-title">לפי פרויקט</div>
-        <div id="sum-breakdown"></div>
-      </div>
-      <div class="card">
-        <div class="section-title">יצוא נתונים</div>
-        <div style="display:flex;gap:10px;margin-bottom:12px">
-          <select id="exp-proj" style="flex:1"></select>
-          <input type="month" id="exp-month" style="flex:1"/>
-        </div>
-        <div style="display:flex;gap:10px">
-          <button class="btn-ghost" style="flex:1" onclick="exportExcel()">📊 Excel</button>
-          <button class="btn-ghost" style="flex:1" onclick="exportCSV()">📄 CSV</button>
-        </div>
+        <p style="font-size:11px;color:var(--text3);margin-top:6px">לחץ על יום לפרטים וחסימה</p>
       </div>
     </div>
 
@@ -1261,42 +1314,85 @@ button{cursor:pointer;border:none;font-weight:600}
         <div id="plan-proj-bars"></div>
       </div>
       <div class="card mb-sm">
-        <div class="section-title">שיבוץ לפי עובד ופרויקט</div>
+        <div class="section-title">שיבוץ עובד × פרויקט</div>
         <div style="overflow-x:auto"><table id="plan-table" style="width:100%;border-collapse:collapse"></table></div>
       </div>
       <button class="btn" style="width:100%" onclick="savePlanning()">שמור תכנון ←</button>
     </div>
 
+    <!-- ANALYSIS -->
+    <div class="page" id="page-analysis">
+      <div class="inner-tabs">
+        <button class="inner-tab sum-tab active" onclick="setSumPeriod('month',this)">החודש</button>
+        <button class="inner-tab sum-tab" onclick="setSumPeriod('week',this)">השבוע</button>
+        <button class="inner-tab sum-tab" onclick="setSumPeriod('all',this)">הכל</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin-bottom:12px" id="sum-metrics"></div>
+      <div id="sum-per-user"></div>
+      <div class="card mb-sm">
+        <div class="section-title">לפי פרויקט</div>
+        <div id="sum-breakdown"></div>
+      </div>
+      <div class="card">
+        <div class="section-title">יצוא נתונים</div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <select id="exp-proj" style="flex:1"></select>
+          <input type="month" id="exp-month" style="flex:1"/>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-ghost" style="flex:1;font-size:13px" onclick="exportExcel()">📊 Excel</button>
+          <button class="btn-ghost" style="flex:1;font-size:13px" onclick="exportCSV()">📄 CSV</button>
+        </div>
+      </div>
+    </div>
+
     <!-- SETTINGS -->
     <div class="page" id="page-settings">
+      <!-- CLIENTS -->
+      <div class="card mb-sm">
+        <div class="section-title">הוסף לקוח</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div style="flex:1"><input type="text" id="new-client-name" placeholder="שם הלקוח"/></div>
+          <input type="color" id="new-client-color" value="#5b61e8" style="width:44px;height:44px"/>
+        </div>
+        <div style="margin-bottom:10px"><input type="text" id="new-client-contact" placeholder="איש קשר (אופציונלי)"/></div>
+        <button class="btn" style="width:100%" onclick="addClient()">+ הוסף לקוח</button>
+      </div>
+      <div class="card mb-sm">
+        <div class="section-title">לקוחות</div>
+        <div id="clients-list"></div>
+      </div>
+      <!-- PROJECTS -->
       <div class="card mb-sm">
         <div class="section-title">הוסף פרויקט</div>
-        <div style="display:flex;gap:10px;margin-bottom:10px">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
           <div style="flex:1"><input type="text" id="new-proj-name" placeholder="שם הפרויקט"/></div>
-          <input type="color" id="new-proj-color" value="#5b61e8" style="width:48px;height:44px"/>
+          <input type="color" id="new-proj-color" value="#16a34a" style="width:44px;height:44px"/>
         </div>
-        <div style="display:flex;gap:10px;margin-bottom:10px">
-          <div style="flex:1"><input type="number" id="new-proj-budget" placeholder="תקציב חודשי (ש')" /></div>
+        <div style="margin-bottom:8px"><select id="new-proj-client"></select></div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div style="flex:1"><input type="number" id="new-proj-budget" placeholder="תקציב (ש')"/></div>
           <div style="flex:1"><select id="new-proj-cadence"><option value="monthly">חודשי</option><option value="quarterly">רבעוני</option></select></div>
         </div>
-        <div style="margin-bottom:12px"><input type="number" id="new-proj-rate" placeholder="שווי שעה ₪ (מנהל בלבד)"/></div>
+        <div style="margin-bottom:10px"><input type="number" id="new-proj-rate" placeholder="שווי שעה ₪ (מנהל בלבד)"/></div>
         <button class="btn" style="width:100%" onclick="addProject()">+ הוסף פרויקט</button>
       </div>
       <div class="card mb-sm">
-        <div class="section-title">פרויקטים קיימים</div>
+        <div class="section-title">פרויקטים</div>
         <div id="projects-list"></div>
       </div>
+      <!-- TEAM -->
       <div class="card mb-sm">
-        <div class="section-title">הוסף עובד לצוות</div>
-        <div style="display:flex;gap:10px;margin-bottom:10px">
-          <div style="flex:1"><input type="text" id="new-member-name" placeholder="שם העובד"/></div>
-          <input type="color" id="new-member-color" value="#16a34a" style="width:48px;height:44px"/>
+        <div class="section-title">הוסף עובד</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div style="flex:1"><input type="text" id="new-member-name" placeholder="שם"/></div>
+          <input type="color" id="new-member-color" value="#d97706" style="width:44px;height:44px"/>
         </div>
-        <div style="display:flex;gap:10px;margin-bottom:10px">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
           <div style="flex:1"><input type="password" id="new-member-code" placeholder="קוד אישי" maxlength="10"/></div>
-          <div style="flex:1"><input type="number" id="new-member-hpd" placeholder="ש' ביום (ברירה: 8)" min="1" max="16" step="0.5"/></div>
+          <div style="flex:1"><input type="number" id="new-member-hpd" placeholder="ש'/יום" min="1" max="16" step="0.5"/></div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
           <input type="checkbox" id="new-member-admin"/>
           <label for="new-member-admin" style="font-size:15px;font-weight:500">מנהל</label>
         </div>
@@ -1315,27 +1411,28 @@ button{cursor:pointer;border:none;font-weight:600}
     <button class="nav-btn" id="nav-report" onclick="showPage('report')"><span class="nav-icon">➕</span><span>דיווח</span></button>
     <button class="nav-btn" id="nav-log" onclick="showPage('log')"><span class="nav-icon">📋</span><span>יומן</span></button>
     <button class="nav-btn" id="nav-plan" onclick="showPage('plan')"><span class="nav-icon">📅</span><span>תכנון</span></button>
-    <button class="nav-btn" id="nav-summary" onclick="showPage('summary')"><span class="nav-icon">📈</span><span>סיכום</span></button>
+    <button class="nav-btn" id="nav-analysis" onclick="showPage('analysis')"><span class="nav-icon">📈</span><span>ניתוח</span></button>
     <button class="nav-btn" id="nav-settings" onclick="showPage('settings')"><span class="nav-icon">⚙️</span><span>הגדרות</span></button>
   </div>
 </div>
 
-<!-- MODAL: BLOCKED DAY -->
-<div class="modal-overlay" id="modal-blocked-day">
+<!-- MODAL: DAY -->
+<div class="modal-overlay" id="modal-day">
   <div class="modal-box">
     <div class="modal-title">
-      <span>📅 <span id="block-date-label"></span></span>
+      <span>📅 <span id="day-modal-title"></span></span>
       <button class="icon-btn" onclick="closeModal()" style="font-size:22px">×</button>
     </div>
     <input type="hidden" id="block-date-val"/>
-    <div id="existing-blocks" style="margin-bottom:14px"></div>
+    <div id="day-entries"></div>
+    <div id="existing-blocks" style="margin-bottom:12px"></div>
     <div style="border-top:1px solid var(--border);padding-top:14px">
-      <div style="font-size:14px;font-weight:600;color:var(--text2);margin-bottom:10px">הוסף חסימה</div>
+      <div style="font-size:13px;font-weight:700;color:var(--text2);margin-bottom:10px">+ הוסף חסימה</div>
       <div class="modal-row">
         <div class="modal-label">סוג</div>
         <select id="block-type" onchange="onBlockTypeChange()">
           <option value="holiday">חג / שבתון (כולם)</option>
-          <option value="personal">חופשה אישית (עובד ספציפי)</option>
+          <option value="personal">חופשה אישית</option>
         </select>
       </div>
       <div class="modal-row" id="block-member-row" style="display:none">
@@ -1343,10 +1440,18 @@ button{cursor:pointer;border:none;font-weight:600}
         <select id="block-member"></select>
       </div>
       <div class="modal-row">
-        <div class="modal-label">סיבה / שם החג</div>
-        <input type="text" id="block-reason" placeholder="לדוגמה: ראש השנה, חופשה בחו&quot;ל..."/>
+        <div class="modal-label">סיבה</div>
+        <input type="text" id="block-reason" placeholder="ראש השנה, חופשה בחו״ל..."/>
       </div>
-      <button class="btn" style="width:100%" onclick="addBlockedDay(document.getElementById('block-date-val').value)">הוסף חסימה ←</button>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <input type="checkbox" id="block-use-range" onchange="onBlockRangeChange()"/>
+        <label for="block-use-range" style="font-size:14px;font-weight:500">טווח תאריכים</label>
+      </div>
+      <div class="modal-row" id="block-range-row" style="display:none">
+        <div class="modal-label">עד תאריך</div>
+        <input type="date" id="block-date-to"/>
+      </div>
+      <button class="btn" style="width:100%" onclick="addBlockedDay()">הוסף חסימה ←</button>
     </div>
   </div>
 </div>
@@ -1354,13 +1459,11 @@ button{cursor:pointer;border:none;font-weight:600}
 <!-- MODAL: EDIT PROJECT -->
 <div class="modal-overlay" id="modal-edit-proj">
   <div class="modal-box">
-    <div class="modal-title">
-      <span>✏️ עריכת פרויקט</span>
-      <button class="icon-btn" onclick="closeModal()" style="font-size:22px">×</button>
-    </div>
+    <div class="modal-title"><span>✏️ עריכת פרויקט</span><button class="icon-btn" onclick="closeModal()" style="font-size:22px">×</button></div>
     <input type="hidden" id="edit-proj-id"/>
     <div class="modal-row"><div class="modal-label">שם</div><input type="text" id="edit-proj-name"/></div>
     <div class="modal-row"><div class="modal-label">צבע</div><input type="color" id="edit-proj-color" style="height:44px"/></div>
+    <div class="modal-row"><div class="modal-label">לקוח</div><select id="edit-proj-client"></select></div>
     <div class="modal-row"><div class="modal-label">תקציב חודשי (ש')</div><input type="number" id="edit-proj-budget"/></div>
     <div class="modal-row"><div class="modal-label">שווי שעה (₪)</div><input type="number" id="edit-proj-rate"/></div>
     <button class="btn" style="width:100%;margin-top:4px" onclick="saveEditProject()">שמור ←</button>
@@ -1370,10 +1473,7 @@ button{cursor:pointer;border:none;font-weight:600}
 <!-- MODAL: EDIT MEMBER -->
 <div class="modal-overlay" id="modal-edit-member">
   <div class="modal-box">
-    <div class="modal-title">
-      <span>✏️ עריכת עובד</span>
-      <button class="icon-btn" onclick="closeModal()" style="font-size:22px">×</button>
-    </div>
+    <div class="modal-title"><span>✏️ עריכת עובד</span><button class="icon-btn" onclick="closeModal()" style="font-size:22px">×</button></div>
     <input type="hidden" id="edit-member-id"/>
     <div class="modal-row"><div class="modal-label">שם</div><input type="text" id="edit-member-name"/></div>
     <div class="modal-row"><div class="modal-label">צבע</div><input type="color" id="edit-member-color" style="height:44px"/></div>
@@ -1384,6 +1484,18 @@ button{cursor:pointer;border:none;font-weight:600}
       <label for="edit-member-admin" style="font-size:15px;font-weight:500">מנהל</label>
     </div>
     <button class="btn" style="width:100%" onclick="saveEditMember()">שמור ←</button>
+  </div>
+</div>
+
+<!-- MODAL: EDIT CLIENT -->
+<div class="modal-overlay" id="modal-edit-client">
+  <div class="modal-box">
+    <div class="modal-title"><span>✏️ עריכת לקוח</span><button class="icon-btn" onclick="closeModal()" style="font-size:22px">×</button></div>
+    <input type="hidden" id="edit-client-id"/>
+    <div class="modal-row"><div class="modal-label">שם</div><input type="text" id="edit-client-name"/></div>
+    <div class="modal-row"><div class="modal-label">צבע</div><input type="color" id="edit-client-color" style="height:44px"/></div>
+    <div class="modal-row"><div class="modal-label">איש קשר</div><input type="text" id="edit-client-contact"/></div>
+    <button class="btn" style="width:100%;margin-top:4px" onclick="saveEditClient()">שמור ←</button>
   </div>
 </div>
 
